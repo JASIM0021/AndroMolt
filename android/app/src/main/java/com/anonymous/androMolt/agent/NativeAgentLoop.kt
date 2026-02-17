@@ -13,7 +13,7 @@ import org.json.JSONObject
 import java.security.MessageDigest
 
 data class AgentConfig(
-    val maxSteps: Int = 20,
+    val maxSteps: Int = 30,
     val actionDelayMs: Long = 2000,
     val stuckThreshold: Int = 4  // Increased from 3 to 4 to be less aggressive
 )
@@ -102,7 +102,7 @@ class NativeAgentLoop(
             screenHashes.add(hash)
 
             // Stuck detection: same screen OR same coordinates clicked repeatedly
-            val isStuckOnScreen = isStuck(screenHashes) && consecutiveFailures >= 2
+            val isStuckOnScreen = isStuck(screenHashes)
             val isStuckOnCoordinates = sameCoordinateClickCount >= 3
 
             if (isStuckOnScreen || isStuckOnCoordinates) {

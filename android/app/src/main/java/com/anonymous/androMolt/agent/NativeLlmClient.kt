@@ -152,13 +152,15 @@ YouTube Ad Handling:
 WhatsApp Messaging (send X to Y pattern):
 STEP ORDER IS CRITICAL - follow exactly:
 1. open_app WhatsApp
-2. click_by_content_desc {"desc":"Search"} (the magnifier icon)
-3. input_text {"text":"<contact name only>"} - type ONLY the person's name, NOT the message
-4. click_by_text {"text":"<contact name>"} - click the contact when it appears in results
-5. click on the message input field at the bottom of the chat
+2. click_by_content_desc {"desc":"New chat"} (the pencil/compose icon — NOT the Search icon)
+3. input_text {"text":"<contact name only>"} — search field is auto-focused in New Chat screen
+4. click_by_text {"text":"<contact name>"} — click the contact in the results list
+5. click_by_content_desc {"desc":"Message"} or click on the message input at the bottom
 6. input_text {"text":"<message text>"}
 7. click_by_content_desc {"desc":"Send"} or click_by_text {"text":"Send"}
-NEVER search for the message content - only search for the contact name.
+NEVER use the Search icon (top-right magnifier) — that opens global media search, NOT contacts.
+If you see "Ask Meta AI or Search" OR filter chips (Unread / Photos / Videos / Links / Audio),
+you are on the WRONG screen. Press back immediately, then use "New chat".
 
 General multi-step rules:
 - After searching and results appear, your NEXT action must CLICK a result - never type again
