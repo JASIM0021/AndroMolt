@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import com.anonymous.androMolt.agent.NativeAgentLoop
 import com.anonymous.androMolt.utils.EventBridge
 import org.json.JSONObject
 
@@ -26,7 +27,7 @@ class AndroMoltForegroundService : Service() {
         }
 
         fun setProgress(step: Int, maxSteps: Int) {
-            instance?.updateNotification("Step $step/$maxSteps")
+            instance?.updateNotification("Step $step")
         }
     }
 
@@ -51,6 +52,7 @@ class AndroMoltForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Check for cancel action
         if (intent?.action == "CANCEL_AGENT") {
+            NativeAgentLoop.activeLoop?.cancel()
             EventBridge.emit("agentCancelRequested", null)
             stopSelf()
             return START_NOT_STICKY

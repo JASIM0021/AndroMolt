@@ -31,6 +31,7 @@ class NativeAgentLoop(
 
     companion object {
         private const val TAG = "NativeAgentLoop"
+        @Volatile var activeLoop: NativeAgentLoop? = null
     }
 
     @Volatile
@@ -44,6 +45,7 @@ class NativeAgentLoop(
             return
         }
 
+        activeLoop = this
         running = true
         Log.i(TAG, "Starting native agent loop for goal: $goal")
 
@@ -59,6 +61,7 @@ class NativeAgentLoop(
                 }
             } finally {
                 running = false
+                activeLoop = null
             }
         }.start()
     }
@@ -84,7 +87,7 @@ class NativeAgentLoop(
 
         while (running && step < config.maxSteps) {
             step++
-            Log.d(TAG, "=== Step $step/$config.maxSteps ===")
+            Log.d(TAG, "=== Step $step/${config.maxSteps} ===")
 
             // 1. OBSERVE
             val snapshot = AccessibilityController.getUiSnapshot()
@@ -118,9 +121,27 @@ class NativeAgentLoop(
                     sameCoordinateClickCount = 0
                     lastClickCoordinates = null
                 } else {
-                    Log.w(TAG, "Stuck detection triggered (same screen + ${consecutiveFailures} failures), pressing back")
-                    emitEvent("agentThink", mapOf("message" to "Stuck on same screen with failures, going back"))
-                    AccessibilityController.pressBack()
+                    val snapLower = compactSnapshot.lowercase()
+                    val onWhatsApp = snapshot.packageName.contains("whatsapp", ignoreCase = true)
+                    when {
+                        // Still in chat with text in input → click Send to unblock
+                        onWhatsApp && snapLower.contains("send") && snapLower.contains("editable") -> {
+                            Log.w(TAG, "Stuck in WhatsApp chat with text — clicking Send instead of Back")
+                            emitEvent("agentThink", mapOf("message" to "Stuck in chat, clicking Send to unblock"))
+                            AccessibilityController.clickByContentDesc("Send")
+                        }
+                        // Input is now empty (shows placeholder) → message was sent, task done
+                        onWhatsApp && snapLower.contains("type a message") -> {
+                            Log.w(TAG, "WhatsApp message sent (empty input), completing task")
+                            emitEvent("agentComplete", mapOf("steps" to step, "message" to "Message sent successfully"))
+                            return AgentResult(true, "Message sent to contact", step)
+                        }
+                        else -> {
+                            Log.w(TAG, "Stuck detection triggered (same screen + ${consecutiveFailures} failures), pressing back")
+                            emitEvent("agentThink", mapOf("message" to "Stuck on same screen with failures, going back"))
+                            AccessibilityController.pressBack()
+                        }
+                    }
                 }
                 screenHashes.clear()  // Clear history after recovery attempt
                 consecutiveFailures = 0
@@ -203,7 +224,7 @@ class NativeAgentLoop(
 
         // Max steps reached
         val finalMessage = if (step >= config.maxSteps) {
-            "Max steps ($config.maxSteps) reached"
+            "Max steps (${config.maxSteps}) reached"
         } else {
             "Agent stopped"
         }
