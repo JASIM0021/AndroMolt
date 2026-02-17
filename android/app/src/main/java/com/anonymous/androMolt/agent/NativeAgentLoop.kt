@@ -77,6 +77,11 @@ class NativeAgentLoop(
 
         emitEvent("agentStart", mapOf("goal" to goal))
 
+        // Pre-launch: force-fresh open the target app if identifiable from goal
+        detectTargetPackage(goal)?.let { pkg ->
+            preLaunchAppFresh(pkg)
+        }
+
         while (running && step < config.maxSteps) {
             step++
             Log.d(TAG, "=== Step $step/$config.maxSteps ===")
@@ -346,6 +351,39 @@ class NativeAgentLoop(
             EventBridge.emit(eventName, jsonData)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to emit event $eventName", e)
+        }
+    }
+
+    private fun detectTargetPackage(goal: String): String? {
+        val g = goal.lowercase()
+        return when {
+            "whatsapp" in g                          -> "com.whatsapp"
+            "youtube" in g                           -> "com.google.android.youtube"
+            "gmail" in g || "email" in g             -> "com.google.android.gm"
+            "chrome" in g || "browser" in g          -> "com.android.chrome"
+            "instagram" in g                         -> "com.instagram.android"
+            "twitter" in g || "x.com" in g           -> "com.twitter.android"
+            "facebook" in g                          -> "com.facebook.katana"
+            "maps" in g || "google maps" in g        -> "com.google.android.apps.maps"
+            "spotify" in g                           -> "com.spotify.music"
+            "netflix" in g                           -> "com.netflix.mediaclient"
+            "telegram" in g                          -> "org.telegram.messenger"
+            "snapchat" in g                          -> "com.snapchat.android"
+            else                                     -> null
+        }
+    }
+
+    private fun preLaunchAppFresh(packageName: String) {
+        try {
+            val intent = context.packageManager.getLaunchIntentForPackage(packageName)
+                ?: return
+            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            context.startActivity(intent)
+            Log.i(TAG, "Pre-launched $packageName fresh (task cleared)")
+            emitEvent("agentThink", mapOf("message" to "Launching $packageName fresh from start..."))
+            Thread.sleep(2500)  // Allow app to fully cold-start before step 1
+        } catch (e: Exception) {
+            Log.w(TAG, "Pre-launch failed for $packageName: ${e.message}")
         }
     }
 

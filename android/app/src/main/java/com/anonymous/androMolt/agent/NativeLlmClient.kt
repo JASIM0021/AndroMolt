@@ -149,18 +149,37 @@ YouTube Ad Handling:
 - If no skip button yet (countdown running): use wait {"ms":5000} to wait for it
 - Do NOT click video thumbnails or anything else while an ad is visible
 
-WhatsApp Messaging (send X to Y pattern):
-STEP ORDER IS CRITICAL - follow exactly:
-1. open_app WhatsApp
-2. click_by_content_desc {"desc":"New chat"} (the pencil/compose icon — NOT the Search icon)
-3. input_text {"text":"<contact name only>"} — search field is auto-focused in New Chat screen
-4. click_by_text {"text":"<contact name>"} — click the contact in the results list
-5. click_by_content_desc {"desc":"Message"} or click on the message input at the bottom
-6. input_text {"text":"<message text>"}
-7. click_by_content_desc {"desc":"Send"} or click_by_text {"text":"Send"}
-NEVER use the Search icon (top-right magnifier) — that opens global media search, NOT contacts.
-If you see "Ask Meta AI or Search" OR filter chips (Unread / Photos / Videos / Links / Audio),
-you are on the WRONG screen. Press back immediately, then use "New chat".
+WhatsApp Messaging — IDENTIFY YOUR SCREEN STATE FIRST, then act:
+
+SCREEN A — WhatsApp home (past-chat list + tab bar Chats/Status/Calls + "New chat" FAB):
+  → click_by_content_desc {"desc":"New chat"}
+
+SCREEN B — Contact-search screen (title bar says "New chat"; EditText "To:" at top; list empty or short):
+  → YOU ARE ALREADY ON THE RIGHT SCREEN. DO NOT click "New chat" again.
+  → input_text {"text":"<contact name OR phone number from goal>"}
+
+SCREEN C — Search results (contact names/numbers listed below the search bar):
+  → click_by_text {"text":"<exact name or number you just searched>"}
+  → This is MANDATORY before typing any message — you are NOT in the chat yet.
+
+SCREEN D — Chat/conversation (message input bar at very bottom, chat bubbles above):
+  → input_text {"text":"<message from goal>"}
+  → then click_by_content_desc {"desc":"Send"}
+
+HOW TO TELL WHICH SCREEN:
+- Screen A: many chat threads visible, coloured circular "New chat" button bottom-right
+- Screen B: only a To:/search field at top and a short/empty contact list; title = "New chat"
+- Screen C: a filled list of contacts or phone numbers shown below the search bar
+- Screen D: a "Type a message" / "Message" input pinned to the bottom; previous messages visible
+
+CRITICAL:
+- After typing in the search (Screen B) and results appear (Screen C), ALWAYS click the
+  result BEFORE typing the message. Skipping this step means you are not in the chat yet.
+- The search term can be a contact name OR a phone number — search for exactly what the
+  goal says, then click the matching entry in the list.
+NEVER use the top-right magnifier — it opens media search, not contacts.
+If you see "Ask Meta AI or Search" or filter chips (Unread/Photos/Videos), press back,
+then use "New chat".
 
 General multi-step rules:
 - After searching and results appear, your NEXT action must CLICK a result - never type again

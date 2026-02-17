@@ -27,33 +27,46 @@ object FallbackHeuristics {
             )
         }
 
-        // WhatsApp: handle "send X to Y" pattern - click contact or type message
+        // WhatsApp: screen-state–based navigation
         if (packageName.contains("whatsapp", ignoreCase = true)) {
-            val sendToMatch = Regex("(?:send|message)\\s+.+?\\s+to\\s+(.+)").find(goalLower)
-            val contactName = sendToMatch?.groupValues?.getOrNull(1)?.trim()
+            val contactOrNumber = extractWhatsAppContactOrNumber(goalLower)
 
-            // Contact found in search results (not in editable/chat mode) - click it
-            if (!contactName.isNullOrBlank() &&
-                screenLower.contains(contactName) &&
-                !screenLower.contains("editable")) {
-                Log.d(TAG, "Heuristic: WhatsApp - clicking contact $contactName")
+            // SCREEN B: "New chat" title present + editable/focused field → type contact/number
+            val isNewChatSearchScreen = screenLower.contains("new chat") &&
+                (screenLower.contains("editable") || screenLower.contains("focused"))
+            // SCREEN C: search results list visible below search bar
+            val hasSearchResults = screenLower.contains("contacts on whatsapp") ||
+                (!contactOrNumber.isNullOrBlank() && screenLower.contains(contactOrNumber.lowercase()))
+
+            if (isNewChatSearchScreen && !hasSearchResults && !contactOrNumber.isNullOrBlank()) {
+                Log.d(TAG, "Heuristic: WhatsApp Screen B — typing: $contactOrNumber")
                 return AgentAction(
-                    action = "click_by_text",
-                    params = mapOf("text" to contactName),
-                    reasoning = "Fallback: WhatsApp - clicking contact $contactName"
+                    action = "input_text",
+                    params = mapOf("text" to contactOrNumber),
+                    reasoning = "Fallback: New Chat search screen, typing: $contactOrNumber"
                 )
             }
 
-            // In chat with editable message field - type the message
-            if (screenLower.contains("editable") && screenLower.contains("message")) {
-                val messageMatch = Regex("(?:send|say|write)\\s+(.+?)\\s+(?:to|in)").find(goalLower)
-                val message = messageMatch?.groupValues?.getOrNull(1)?.trim()
+            if (hasSearchResults && !contactOrNumber.isNullOrBlank()) {
+                Log.d(TAG, "Heuristic: WhatsApp Screen C — clicking result: $contactOrNumber")
+                return AgentAction(
+                    action = "click_by_text",
+                    params = mapOf("text" to contactOrNumber),
+                    reasoning = "Fallback: Contact/number results visible, clicking: $contactOrNumber"
+                )
+            }
+
+            // SCREEN D: inside a chat — type the message
+            val isInChat = screenLower.contains("type a message") ||
+                (screenLower.contains("editable") && screenLower.contains("message"))
+            if (isInChat) {
+                val message = extractWhatsAppMessage(goalLower)
                 if (!message.isNullOrBlank()) {
-                    Log.d(TAG, "Heuristic: WhatsApp - typing message '$message'")
+                    Log.d(TAG, "Heuristic: WhatsApp Screen D — typing message: $message")
                     return AgentAction(
                         action = "input_text",
                         params = mapOf("text" to message),
-                        reasoning = "Fallback: WhatsApp - typing message '$message'"
+                        reasoning = "Fallback: In chat, typing message: $message"
                     )
                 }
             }
@@ -293,6 +306,35 @@ object FallbackHeuristics {
             goalLower.contains("tiktok") -> "com.zhiliaoapp.musically"
             else -> null
         }
+    }
+
+    private fun extractWhatsAppContactOrNumber(goalLower: String): String? {
+        // Handles both "send hi to di" (name) and "send hi to 7679349780" (number)
+        val patterns = listOf(
+            Regex("(?:send|message|msg|text)\\s+.+?\\s+to\\s+([\\w\\s]+?)(?:\\s+(?:and|saying|with)|$)"),
+            Regex("(?:send|message|msg)\\s+to\\s+([\\w\\s]+?)(?:\\s+(?:and|saying|with)|$)"),
+            Regex("whatsapp\\s+([\\w\\s]+?)(?:\\s+(?:and|saying|with)|$)")
+        )
+        for (pattern in patterns) {
+            val contact = pattern.find(goalLower)?.groupValues?.getOrNull(1)?.trim()
+            if (!contact.isNullOrBlank()) return contact
+        }
+        return null
+    }
+
+    private fun extractWhatsAppMessage(goalLower: String): String? {
+        val patterns = listOf(
+            Regex("saying\\s+['\"]?([^'\"]+)['\"]?"),
+            Regex("message\\s+(?:is\\s+)?['\"]([^'\"]+)['\"]"),
+            Regex("send\\s+['\"]([^'\"]+)['\"]\\s+to"),
+            // "send hi to ..." — extract the word(s) before "to"
+            Regex("send\\s+([a-zA-Z][\\w\\s]{0,30}?)\\s+to\\s")
+        )
+        for (pattern in patterns) {
+            val msg = pattern.find(goalLower)?.groupValues?.getOrNull(1)?.trim()
+            if (!msg.isNullOrBlank() && !msg.contains("whatsapp")) return msg
+        }
+        return null
     }
 
     private fun extractQuery(goalLower: String): String {
