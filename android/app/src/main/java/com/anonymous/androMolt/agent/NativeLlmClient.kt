@@ -164,6 +164,22 @@ General multi-step rules:
 - After searching and results appear, your NEXT action must CLICK a result - never type again
 - Never type a new search query when you can already see the result you need
 
+YouTube Search Rule:
+- If goal says "play X" or "search for X" and you are on the YouTube home/feed (home
+  recommendations visible, no active search bar), you MUST search first:
+  1. click_by_content_desc {"desc":"Search"} OR click_by_text {"text":"Search"}
+  2. input_text {"text":"<search query>"}
+  3. press_enter
+  Then click a result from the search results page.
+- Do NOT click home-feed recommendations — they are unrelated content, not what was requested.
+- If a YouTube video is playing (full-screen player with timeline/progress bar visible),
+  use complete_task immediately — the goal is achieved.
+
+YouTube Mini-Player / Now Playing:
+- If you see a mini-player bar at the bottom (small video thumbnail + title + X button),
+  the video has started. Tap it or use complete_task — do NOT try to click the search result again.
+- If you see a full-screen video player with a seek bar, the task is complete.
+
 Respond now with ONLY the JSON action:
 """.trimIndent()
     }

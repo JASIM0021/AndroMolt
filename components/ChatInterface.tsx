@@ -9,17 +9,16 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Modal,
   BackHandler,
   AppState,
   NativeModules,
   NativeEventEmitter,
   DeviceEventEmitter,
 } from 'react-native';
-import { AgentLoop } from '../lib/agent/AgentLoop';
-import { agentEvents, AgentEvent } from '../lib/automation/AgentEvents';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
+import type { AgentEvent } from '../lib/automation/AgentEvents';
 import { useAutomationStore } from '../lib/stores/automationStore';
-import { AgentAction } from '../types/agent';
 import OnboardingScreen from './OnboardingScreen';
 
 const { AndroMoltCore, AndroMoltPermission } = NativeModules;
@@ -37,9 +36,6 @@ interface ChatMessage {
   results?: any[];
 }
 
-// Singleton agent loop
-const agentLoop = new AgentLoop();
-
 export default function ChatInterface() {
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -50,10 +46,6 @@ export default function ChatInterface() {
   const [isAgentRunning, setIsAgentRunning] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
 
-  // Confirmation modal state
-  const [confirmationAction, setConfirmationAction] = useState<AgentAction | null>(null);
-  const confirmResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
-
   const {
     chatMessages,
     addChatMessage,
@@ -62,54 +54,8 @@ export default function ChatInterface() {
     setIsExecuting,
   } = useAutomationStore();
 
-  // Set up confirmation callback on agent loop
+  // Subscribe to native agent events
   useEffect(() => {
-    agentLoop.setConfirmationCallback(async (action: AgentAction) => {
-      return new Promise<boolean>((resolve) => {
-        confirmResolveRef.current = resolve;
-        setConfirmationAction(action);
-      });
-    });
-  }, []);
-
-  const confirmAction = () => {
-    confirmResolveRef.current?.(true);
-    confirmResolveRef.current = null;
-    setConfirmationAction(null);
-  };
-
-  const denyAction = () => {
-    confirmResolveRef.current?.(false);
-    confirmResolveRef.current = null;
-    setConfirmationAction(null);
-  };
-
-  // Subscribe to agent events (both JS and Native)
-  useEffect(() => {
-    const handleLog = (event: AgentEvent) => {
-      setAgentLogs(prev => [...prev.slice(-50), event]);
-    };
-
-    const handleStateChanged = (state: any) => {
-      setIsAgentRunning(state.isRunning);
-      if (state.currentStep) {
-        setAgentProgress({
-          step: state.currentStep,
-          maxSteps: state.maxSteps,
-          message: state.lastAction || 'Thinking...'
-        });
-      }
-    };
-
-    const handleComplete = () => {
-      setIsAgentRunning(false);
-    };
-
-    // JS agent events (legacy)
-    agentEvents.on('log', handleLog);
-    agentEvents.on('state_changed', handleStateChanged);
-    agentEvents.on('complete', handleComplete);
-
     // Native agent events
     const handleNativeAgentStart = (data: any) => {
       setIsAgentRunning(true);
@@ -179,12 +125,6 @@ export default function ChatInterface() {
     const agentCompleteListener = DeviceEventEmitter.addListener('agentComplete', handleNativeAgentComplete);
 
     return () => {
-      // Unsubscribe JS events
-      agentEvents.off('log', handleLog);
-      agentEvents.off('state_changed', handleStateChanged);
-      agentEvents.off('complete', handleComplete);
-
-      // Unsubscribe native events
       agentStartListener.remove();
       agentStepListener.remove();
       agentActionListener.remove();
@@ -401,313 +341,360 @@ Let the agent work...`,
     setInputText(action);
   };
 
+  const insets = useSafeAreaInsets();
+
   return (
-    <View style={styles.container}>
-      {/* Confirmation Modal */}
-      <Modal visible={confirmationAction !== null} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>High-Risk Action</Text>
-            <Text style={styles.modalDesc}>
-              {confirmationAction?.reasoning}
-            </Text>
-            <Text style={styles.modalAction}>
-              Action: {confirmationAction?.action}
-            </Text>
-            <Text style={styles.modalParams}>
-              {JSON.stringify(confirmationAction?.params, null, 2)}
-            </Text>
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.denyButton} onPress={denyAction}>
-                <Text style={styles.denyButtonText}>Deny</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.allowButton} onPress={confirmAction}>
-                <Text style={styles.allowButtonText}>Allow</Text>
-              </TouchableOpacity>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+      <StatusBar style="dark" backgroundColor="#ffffff" translucent={false} />
+
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior="padding"
+        keyboardVerticalOffset={0}
+      >
+        {/* Agent Progress Bar */}
+        {isAgentRunning && (
+          <View style={styles.agentProgressContainer}>
+            <View style={styles.agentProgressHeader}>
+              <View style={styles.agentTitleRow}>
+                <View style={styles.agentDot} />
+                <Text style={styles.agentProgressTitle}>Agent Running</Text>
+              </View>
+              <View style={styles.agentHeaderRight}>
+                <Text style={styles.agentProgressStep}>
+                  {agentProgress.step}/{agentProgress.maxSteps}
+                </Text>
+                <TouchableOpacity style={styles.cancelButton} onPress={handleCancelAgent}>
+                  <Text style={styles.cancelButtonText}>✕ Cancel</Text>
+                </TouchableOpacity>
+              </View>
             </View>
+            <View style={styles.progressBarContainer}>
+              <View
+                style={[
+                  styles.progressBar,
+                  { width: `${(agentProgress.step / agentProgress.maxSteps) * 100}%` }
+                ]}
+              />
+            </View>
+            <Text style={styles.agentProgressMessage} numberOfLines={1}>
+              {agentProgress.message}
+            </Text>
+            <ScrollView style={styles.logsContainer} nestedScrollEnabled>
+              {agentLogs.slice(-10).map((log, index) => (
+                <Text
+                  key={index}
+                  style={[
+                    styles.logText,
+                    log.type === 'error' && styles.logError,
+                    log.type === 'goal_achieved' && styles.logSuccess,
+                    log.type === 'thinking' && styles.logThinking,
+                  ]}
+                >
+                  {log.message}
+                </Text>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.headerContent}>
+            <View style={styles.headerLogoRow}>
+              <View style={styles.headerLogo}>
+                <Text style={styles.headerLogoText}>A</Text>
+              </View>
+              <View>
+                <Text style={styles.headerTitle}>AndroMolt</Text>
+                <Text style={styles.headerSubtitle}>AI Automation Assistant</Text>
+              </View>
+            </View>
+            {isExecuting && (
+              <View style={styles.executingIndicator}>
+                <ActivityIndicator size="small" color="#007AFF" />
+                <Text style={styles.executingText}>Running…</Text>
+              </View>
+            )}
           </View>
         </View>
-      </Modal>
 
-      {/* Agent Progress Bar */}
-      {isAgentRunning && (
-        <View style={styles.agentProgressContainer}>
-          <View style={styles.agentProgressHeader}>
-            <Text style={styles.agentProgressTitle}>Agent Running</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Text style={styles.agentProgressStep}>
-                Step {agentProgress.step}/{agentProgress.maxSteps}
-              </Text>
-              <TouchableOpacity style={styles.cancelButton} onPress={handleCancelAgent}>
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-          <View style={styles.progressBarContainer}>
-            <View
-              style={[
-                styles.progressBar,
-                { width: `${(agentProgress.step / agentProgress.maxSteps) * 100}%` }
-              ]}
-            />
-          </View>
-          <Text style={styles.agentProgressMessage}>{agentProgress.message}</Text>
-
-          {/* Live Logs */}
-          <ScrollView style={styles.logsContainer} nestedScrollEnabled>
-            {agentLogs.slice(-10).map((log, index) => (
-              <Text
-                key={index}
-                style={[
-                  styles.logText,
-                  log.type === 'error' && styles.logError,
-                  log.type === 'goal_achieved' && styles.logSuccess,
-                  log.type === 'thinking' && styles.logThinking,
-                ]}
+        {/* Quick Actions */}
+        <View style={styles.quickActions}>
+          <Text style={styles.quickActionsTitle}>Quick Actions</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.quickActionsRow}
+          >
+            {[
+              { label: '▶ YouTube', action: 'Open YouTube and play a Hindi song' },
+              { label: '💬 WhatsApp', action: 'Launch WhatsApp' },
+              { label: '⚙ Settings', action: 'Open Settings' },
+              { label: '📸 Instagram', action: 'Open Instagram' },
+            ].map((item) => (
+              <TouchableOpacity
+                key={item.label}
+                style={styles.quickAction}
+                onPress={() => handleQuickAction(item.action)}
+                activeOpacity={0.75}
               >
-                {log.message}
-              </Text>
+                <Text style={styles.quickActionText}>{item.label}</Text>
+              </TouchableOpacity>
             ))}
           </ScrollView>
         </View>
-      )}
 
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>AndroMolt</Text>
-        <Text style={styles.headerSubtitle}>AI Automation Assistant</Text>
-        {isExecuting && (
-          <View style={styles.executingIndicator}>
-            <ActivityIndicator size="small" color="#007AFF" />
-            <Text style={styles.executingText}>Executing...</Text>
-          </View>
-        )}
-      </View>
-
-      {/* Quick Actions */}
-      <View style={styles.quickActions}>
-        <Text style={styles.quickActionsTitle}>Quick Actions:</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <TouchableOpacity
-            style={styles.quickAction}
-            onPress={() => handleQuickAction('Open YouTube and play a Hindi song')}
-          >
-            <Text style={styles.quickActionText}>YouTube</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.quickAction}
-            onPress={() => handleQuickAction('Launch WhatsApp')}
-          >
-            <Text style={styles.quickActionText}>WhatsApp</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.quickAction}
-            onPress={() => handleQuickAction('Open Settings')}
-          >
-            <Text style={styles.quickActionText}>Settings</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.quickAction}
-            onPress={() => handleQuickAction('Open Instagram')}
-          >
-            <Text style={styles.quickActionText}>Instagram</Text>
-          </TouchableOpacity>
+        {/* Chat Messages */}
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.messagesContainer}
+          contentContainerStyle={styles.messagesContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {chatMessages.map(renderMessage)}
+          {isLoading && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="small" color="#007AFF" />
+              <Text style={styles.loadingText}>Processing…</Text>
+            </View>
+          )}
         </ScrollView>
-      </View>
 
-      {/* Chat Messages */}
-      <ScrollView
-        ref={scrollViewRef}
-        style={styles.messagesContainer}
-        contentContainerStyle={styles.messagesContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {chatMessages.map(renderMessage)}
-        {isLoading && (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="small" color="#007AFF" />
-            <Text style={styles.loadingText}>Processing your command...</Text>
+        {/* Input Area */}
+        <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          <View style={styles.inputRow}>
+            <TextInput
+              style={[styles.textInput, isLoading && styles.textInputDisabled]}
+              value={inputText}
+              onChangeText={setInputText}
+              placeholder="Tell me what to do…"
+              placeholderTextColor="#aaa"
+              multiline
+              maxLength={500}
+              editable={!isLoading}
+              textAlignVertical="center"
+            />
+            <TouchableOpacity
+              style={[
+                styles.sendButton,
+                (!inputText.trim() || isLoading) && styles.sendButtonDisabled,
+              ]}
+              onPress={handleSendMessage}
+              disabled={!inputText.trim() || isLoading}
+              activeOpacity={0.8}
+            >
+              {isLoading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.sendButtonText}>↑</Text>
+              )}
+            </TouchableOpacity>
           </View>
-        )}
-      </ScrollView>
-
-      {/* Input Area */}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.inputContainer}
-      >
-        <View style={styles.inputRow}>
-          <TextInput
-            style={styles.textInput}
-            value={inputText}
-            onChangeText={setInputText}
-            placeholder="Tell me what you want to do..."
-            placeholderTextColor="#999"
-            multiline
-            maxLength={500}
-            editable={!isLoading}
-          />
-          <TouchableOpacity
-            style={[
-              styles.sendButton,
-              (!inputText.trim() || isLoading) && styles.sendButtonDisabled,
-            ]}
-            onPress={handleSendMessage}
-            disabled={!inputText.trim() || isLoading}
-          >
-            {isLoading ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Text style={styles.sendButtonText}>Send</Text>
-            )}
-          </TouchableOpacity>
+          {inputText.length > 400 && (
+            <Text style={styles.charCount}>{inputText.length}/500</Text>
+          )}
         </View>
       </KeyboardAvoidingView>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+  },
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#f2f4f7',
   },
+
+  // ── Header ──────────────────────────────────────────────
   header: {
-    backgroundColor: '#fff',
-    padding: 16,
+    backgroundColor: '#ffffff',
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: '#e8eaf0',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+  },
+  headerContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  headerLogoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  headerLogo: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: '#007AFF',
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  headerTitle: {
-    fontSize: 24,
+  headerLogoText: {
+    color: '#fff',
+    fontSize: 18,
     fontWeight: 'bold',
-    color: '#333',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a2e',
+    letterSpacing: 0.3,
   },
   headerSubtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 4,
+    fontSize: 12,
+    color: '#888',
+    marginTop: 1,
   },
   executingIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 8,
     backgroundColor: '#e8f4fd',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 12,
+    gap: 6,
   },
   executingText: {
-    marginLeft: 8,
     fontSize: 12,
     color: '#007AFF',
+    fontWeight: '500',
   },
+
+  // ── Quick Actions ────────────────────────────────────────
   quickActions: {
-    backgroundColor: '#fff',
-    paddingVertical: 12,
+    backgroundColor: '#ffffff',
+    paddingTop: 10,
+    paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: '#e8eaf0',
   },
   quickActionsTitle: {
-    fontSize: 16,
+    fontSize: 12,
     fontWeight: '600',
-    color: '#333',
-    marginBottom: 8,
+    color: '#888',
     paddingHorizontal: 16,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  quickActionsRow: {
+    paddingHorizontal: 12,
+    gap: 8,
   },
   quickAction: {
     backgroundColor: '#007AFF',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    marginLeft: 12,
-    marginRight: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 18,
   },
   quickActionText: {
     color: '#fff',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '500',
   },
+
+  // ── Messages ─────────────────────────────────────────────
   messagesContainer: {
     flex: 1,
   },
   messagesContent: {
     padding: 16,
+    paddingBottom: 8,
   },
   messageContainer: {
     flexDirection: 'row',
-    marginBottom: 16,
-    alignItems: 'flex-start',
+    marginBottom: 14,
+    alignItems: 'flex-end',
   },
   userMessage: {
     justifyContent: 'flex-end',
   },
   avatarContainer: {
-    marginHorizontal: 8,
+    marginHorizontal: 6,
   },
   avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     backgroundColor: '#007AFF',
     justifyContent: 'center',
     alignItems: 'center',
   },
   userAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#4CAF50',
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#34C759',
     justifyContent: 'center',
     alignItems: 'center',
   },
   avatarText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 'bold',
     color: '#fff',
   },
   messageBubble: {
-    maxWidth: '70%',
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 12,
+    maxWidth: '75%',
+    backgroundColor: '#ffffff',
+    borderRadius: 18,
+    borderBottomLeftRadius: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
+    shadowOpacity: 0.07,
+    shadowRadius: 3,
+    elevation: 1,
   },
   userBubble: {
     backgroundColor: '#007AFF',
+    borderBottomLeftRadius: 18,
+    borderBottomRightRadius: 4,
   },
   systemBubble: {
-    backgroundColor: '#fff3cd',
+    backgroundColor: '#fffbea',
     borderLeftWidth: 3,
-    borderLeftColor: '#ffc107',
+    borderLeftColor: '#f59e0b',
+    borderRadius: 12,
+    borderBottomLeftRadius: 4,
+    maxWidth: '90%',
   },
   messageText: {
     fontSize: 15,
-    color: '#333',
-    lineHeight: 20,
+    color: '#1a1a2e',
+    lineHeight: 21,
   },
   userText: {
-    color: '#fff',
+    color: '#ffffff',
   },
   systemText: {
-    color: '#856404',
+    color: '#78350f',
     fontSize: 13,
+    lineHeight: 19,
   },
   resultsContainer: {
     marginTop: 8,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#f1f5f9',
     borderRadius: 8,
     padding: 8,
   },
   resultsTitle: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
-    color: '#666',
+    color: '#64748b',
     marginBottom: 4,
   },
   resultItem: {
@@ -718,71 +705,99 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   successText: {
-    color: '#28a745',
+    color: '#16a34a',
   },
   errorText: {
-    color: '#dc3545',
+    color: '#dc2626',
   },
+
+  // ── Loading ───────────────────────────────────────────────
   initialLoadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#f2f4f7',
   },
   loadingContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
+    padding: 12,
+    gap: 10,
   },
   loadingText: {
-    marginLeft: 12,
-    fontSize: 16,
-    color: '#666',
+    fontSize: 14,
+    color: '#888',
   },
+
+  // ── Input ─────────────────────────────────────────────────
   inputContainer: {
-    backgroundColor: '#fff',
+    backgroundColor: '#ffffff',
     borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    borderTopColor: '#e8eaf0',
+    paddingHorizontal: 12,
+    paddingTop: 10,
   },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: 12,
+    gap: 8,
   },
   textInput: {
     flex: 1,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#d1d5db',
+    borderRadius: 22,
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 16,
-    maxHeight: 100,
-    backgroundColor: '#f9f9f9',
+    paddingTop: 10,
+    paddingBottom: 10,
+    fontSize: 15,
+    maxHeight: 110,
+    minHeight: 44,
+    backgroundColor: '#f9fafb',
+    color: '#1a1a2e',
+  },
+  textInputDisabled: {
+    opacity: 0.6,
+  },
+  charCount: {
+    fontSize: 11,
+    color: '#f59e0b',
+    textAlign: 'right',
+    marginTop: 4,
+    marginBottom: 2,
   },
   sendButton: {
+    width: 44,
+    height: 44,
     backgroundColor: '#007AFF',
-    borderRadius: 20,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    borderRadius: 22,
     justifyContent: 'center',
     alignItems: 'center',
+    elevation: 2,
+    shadowColor: '#007AFF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
   },
   sendButtonDisabled: {
-    backgroundColor: '#ccc',
+    backgroundColor: '#c7d2d8',
+    elevation: 0,
+    shadowOpacity: 0,
   },
   sendButtonText: {
     color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 20,
+    fontWeight: '700',
+    lineHeight: 24,
   },
-  // Agent Progress Styles
+
+  // ── Agent Progress ────────────────────────────────────────
   agentProgressContainer: {
-    backgroundColor: '#1a1a2e',
-    padding: 12,
+    backgroundColor: '#0d1117',
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 10,
     borderBottomWidth: 2,
     borderBottomColor: '#007AFF',
   },
@@ -792,129 +807,83 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
+  agentTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  agentDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#00d68f',
+  },
   agentProgressTitle: {
-    color: '#00ff88',
-    fontSize: 14,
-    fontWeight: 'bold',
+    color: '#00d68f',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  agentHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   agentProgressStep: {
-    color: '#888',
+    color: '#6b7280',
     fontSize: 12,
+    fontWeight: '600',
   },
   progressBarContainer: {
-    height: 4,
-    backgroundColor: '#333',
+    height: 3,
+    backgroundColor: '#1f2937',
     borderRadius: 2,
     overflow: 'hidden',
     marginBottom: 8,
   },
   progressBar: {
     height: '100%',
-    backgroundColor: '#00ff88',
+    backgroundColor: '#00d68f',
     borderRadius: 2,
   },
   agentProgressMessage: {
-    color: '#fff',
-    fontSize: 12,
+    color: '#9ca3af',
+    fontSize: 11,
     marginBottom: 8,
   },
   logsContainer: {
-    maxHeight: 100,
-    backgroundColor: '#0a0a15',
-    borderRadius: 8,
+    maxHeight: 90,
+    backgroundColor: '#080c12',
+    borderRadius: 6,
     padding: 8,
   },
   logText: {
-    color: '#aaa',
+    color: '#6b7280',
     fontSize: 10,
-    fontFamily: 'monospace',
+    fontFamily: Platform.OS === 'android' ? 'monospace' : 'Courier',
     marginBottom: 2,
+    lineHeight: 14,
   },
   logError: {
-    color: '#ff4444',
+    color: '#f87171',
   },
   logSuccess: {
-    color: '#00ff88',
+    color: '#00d68f',
   },
   logThinking: {
-    color: '#4488ff',
+    color: '#60a5fa',
   },
   cancelButton: {
-    marginLeft: 12,
-    backgroundColor: '#ff4444',
+    backgroundColor: '#7f1d1d',
+    borderWidth: 1,
+    borderColor: '#dc2626',
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 8,
+    borderRadius: 6,
   },
   cancelButtonText: {
-    color: '#fff',
+    color: '#fca5a5',
     fontSize: 11,
-    fontWeight: '600',
-  },
-  // Confirmation Modal
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 24,
-    width: '100%',
-    maxWidth: 400,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#dc3545',
-    marginBottom: 12,
-  },
-  modalDesc: {
-    fontSize: 14,
-    color: '#333',
-    marginBottom: 8,
-  },
-  modalAction: {
-    fontSize: 13,
-    color: '#666',
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  modalParams: {
-    fontSize: 12,
-    color: '#888',
-    fontFamily: 'monospace',
-    backgroundColor: '#f5f5f5',
-    padding: 8,
-    borderRadius: 8,
-    marginBottom: 16,
-  },
-  modalButtons: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 12,
-  },
-  denyButton: {
-    backgroundColor: '#f5f5f5',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  denyButtonText: {
-    color: '#333',
-    fontWeight: '600',
-  },
-  allowButton: {
-    backgroundColor: '#28a745',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  allowButtonText: {
-    color: '#fff',
     fontWeight: '600',
   },
 });

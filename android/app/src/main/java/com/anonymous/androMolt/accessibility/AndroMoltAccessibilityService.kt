@@ -168,12 +168,34 @@ class AndroMoltAccessibilityService : AccessibilityService() {
      * Click on a node
      */
     fun clickNode(node: AccessibilityNodeInfo): Boolean {
-        return if (node.isClickable) {
-            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        } else {
-            // If not clickable, try clicking parent
-            node.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK) ?: false
+        // Walk up to 5 ancestor levels looking for a clickable node, then try performAction.
+        // If performAction fails on a found clickable node, fall back to coordinate click.
+        var candidate: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (candidate != null && depth <= 5) {
+            if (candidate.isClickable) {
+                if (candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                // performAction failed on a clickable node — use coordinate click
+                val rect = android.graphics.Rect()
+                candidate.getBoundsInScreen(rect)
+                if (!rect.isEmpty) {
+                    val cx = (rect.left + rect.right) / 2
+                    val cy = (rect.top + rect.bottom) / 2
+                    if (clickCoordinates(cx, cy)) return true
+                }
+            }
+            candidate = candidate.parent
+            depth++
         }
+        // Last resort: coordinate click on original node's bounds
+        val rect = android.graphics.Rect()
+        node.getBoundsInScreen(rect)
+        if (!rect.isEmpty) {
+            val cx = (rect.left + rect.right) / 2
+            val cy = (rect.top + rect.bottom) / 2
+            return clickCoordinates(cx, cy)
+        }
+        return false
     }
 
     /**

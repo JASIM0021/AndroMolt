@@ -9,7 +9,8 @@
       "Bash(./gradlew assembleDebug:*)",
       "Bash(./gradlew compileDebugKotlin:*)",
       "Bash(grep:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(wc:*)"
     ]
   }
 }
