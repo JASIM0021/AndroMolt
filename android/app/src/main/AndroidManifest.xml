@@ -1,0 +1,87 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- ==== Core Permissions ==== -->
+  <uses-permission android:name="android.permission.INTERNET"/>
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+  <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+  <uses-permission android:name="android.permission.VIBRATE"/>
+  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+  <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+  <!-- ==== AndroMolt Permissions ==== -->
+  <!-- Foreground Service for background automation -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+
+  <!-- Post Notifications (Android 13+) -->
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+  <!-- Optional: Contacts for "message my friend John" -->
+  <uses-permission android:name="android.permission.READ_CONTACTS"/>
+
+  <!-- Optional: WiFi Control -->
+  <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
+  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+
+  <!-- Query Installed Apps (Android 11+) -->
+  <queries>
+    <intent>
+      <action android:name="android.intent.action.VIEW"/>
+      <category android:name="android.intent.category.BROWSABLE"/>
+      <data android:scheme="https"/>
+    </intent>
+    <intent>
+      <action android:name="android.intent.action.MAIN"/>
+    </intent>
+    <!-- Popular apps for automation -->
+    <package android:name="com.whatsapp"/>
+    <package android:name="com.google.android.youtube"/>
+    <package android:name="com.linkedin.android"/>
+    <package android:name="com.instagram.android"/>
+    <package android:name="com.facebook.katana"/>
+    <package android:name="com.spotify.music"/>
+    <package android:name="com.netflix.mediaclient"/>
+  </queries>
+  <application android:name="com.andromolt.MainApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:theme="@style/AppTheme" android:supportsRtl="true" android:enableOnBackInvokedCallback="false">
+    <meta-data android:name="expo.modules.updates.ENABLED" android:value="false"/>
+    <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>
+    <meta-data android:name="expo.modules.updates.EXPO_UPDATES_LAUNCH_WAIT_MS" android:value="0"/>
+    <activity android:name="com.anonymous.androMolt.MainActivity" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.App.SplashScreen" android:exported="true" android:screenOrientation="portrait">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="andromolt"/>
+      </intent-filter>
+    </activity>
+
+    <!-- ==== AndroMolt Services ==== -->
+
+    <!-- Accessibility Service for UI automation -->
+    <service
+      android:name="com.anonymous.androMolt.accessibility.AndroMoltAccessibilityService"
+      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.accessibilityservice.AccessibilityService"/>
+      </intent-filter>
+      <meta-data
+        android:name="android.accessibilityservice"
+        android:resource="@xml/accessibility_service_config"/>
+    </service>
+
+    <!-- Foreground Service for long-running automation -->
+    <service
+      android:name="com.anonymous.androMolt.service.AndroMoltForegroundService"
+      android:foregroundServiceType="specialUse"
+      android:exported="false">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="automation_agent"/>
+    </service>
+
+  </application>
+</manifest>

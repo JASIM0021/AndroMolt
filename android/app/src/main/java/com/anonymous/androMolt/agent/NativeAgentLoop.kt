@@ -1,0 +1,366 @@
+package com.anonymous.androMolt.agent
+
+import android.content.Context
+import android.content.Intent
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import com.anonymous.androMolt.accessibility.AccessibilityController
+import com.anonymous.androMolt.accessibility.UiSnapshot
+import com.anonymous.androMolt.accessibility.UiTreeBuilder
+import com.anonymous.androMolt.utils.EventBridge
+import org.json.JSONObject
+import java.security.MessageDigest
+
+data class AgentConfig(
+    val maxSteps: Int = 20,
+    val actionDelayMs: Long = 2000,
+    val stuckThreshold: Int = 4  // Increased from 3 to 4 to be less aggressive
+)
+
+data class AgentResult(
+    val success: Boolean,
+    val message: String,
+    val steps: Int
+)
+
+class NativeAgentLoop(
+    private val context: Context,
+    private val llmClient: NativeLlmClient
+) {
+
+    companion object {
+        private const val TAG = "NativeAgentLoop"
+    }
+
+    @Volatile
+    private var running = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val config = AgentConfig(maxSteps = 20, actionDelayMs = 2000, stuckThreshold = 4)
+
+    fun run(goal: String, onComplete: (AgentResult) -> Unit) {
+        if (running) {
+            Log.w(TAG, "Agent loop already running")
+            return
+        }
+
+        running = true
+        Log.i(TAG, "Starting native agent loop for goal: $goal")
+
+        // Run in background thread
+        Thread {
+            try {
+                val result = runLoop(goal)
+                handler.post { onComplete(result) }
+            } catch (e: Exception) {
+                Log.e(TAG, "Agent loop crashed", e)
+                handler.post {
+                    onComplete(AgentResult(false, "Error: ${e.message}", 0))
+                }
+            } finally {
+                running = false
+            }
+        }.start()
+    }
+
+    fun cancel() {
+        running = false
+        Log.i(TAG, "Agent loop cancelled")
+    }
+
+    private fun runLoop(goal: String): AgentResult {
+        var step = 0
+        val screenHashes = mutableListOf<String>()
+        var consecutiveFailures = 0
+        var lastClickCoordinates: Pair<Int, Int>? = null
+        var sameCoordinateClickCount = 0
+
+        emitEvent("agentStart", mapOf("goal" to goal))
+
+        while (running && step < config.maxSteps) {
+            step++
+            Log.d(TAG, "=== Step $step/$config.maxSteps ===")
+
+            // 1. OBSERVE
+            val snapshot = AccessibilityController.getUiSnapshot()
+            if (snapshot == null) {
+                Log.w(TAG, "No UI snapshot available, waiting...")
+                emitEvent("agentThink", mapOf("message" to "Waiting for UI access..."))
+                Thread.sleep(config.actionDelayMs)
+                continue
+            }
+
+            val compactSnapshot = UiTreeBuilder.toCompactString(snapshot)
+            emitEvent("agentStep", mapOf(
+                "step" to step,
+                "package" to snapshot.packageName,
+                "elementCount" to snapshot.nodes.size
+            ))
+
+            // 2. STUCK DETECTION
+            val hash = hashScreen(snapshot.packageName, snapshot.nodes.size, compactSnapshot)
+            screenHashes.add(hash)
+
+            // Stuck detection: same screen OR same coordinates clicked repeatedly
+            val isStuckOnScreen = isStuck(screenHashes) && consecutiveFailures >= 2
+            val isStuckOnCoordinates = sameCoordinateClickCount >= 3
+
+            if (isStuckOnScreen || isStuckOnCoordinates) {
+                if (isStuckOnCoordinates) {
+                    Log.w(TAG, "Stuck clicking same coordinates ${sameCoordinateClickCount} times, trying scroll")
+                    emitEvent("agentThink", mapOf("message" to "Stuck clicking same spot, scrolling to find other results"))
+                    AccessibilityController.scrollDown()
+                    sameCoordinateClickCount = 0
+                    lastClickCoordinates = null
+                } else {
+                    Log.w(TAG, "Stuck detection triggered (same screen + ${consecutiveFailures} failures), pressing back")
+                    emitEvent("agentThink", mapOf("message" to "Stuck on same screen with failures, going back"))
+                    AccessibilityController.pressBack()
+                }
+                screenHashes.clear()  // Clear history after recovery attempt
+                consecutiveFailures = 0
+                Thread.sleep(config.actionDelayMs)
+                continue
+            }
+
+            // 3. SELF-HEALING - if back on AndroMolt, move to background
+            if (step > 1 && snapshot.packageName.contains("andromolt", ignoreCase = true)) {
+                Log.w(TAG, "Self-healing: Back on AndroMolt, moving to background")
+                emitEvent("agentThink", mapOf("message" to "Moving AndroMolt to background"))
+                moveToBackground()
+                Thread.sleep(1500)
+                continue
+            }
+
+            // 4. PLAN - Get next action from LLM or fallback
+            Log.d(TAG, "Getting next action from planner")
+            val action = llmClient.getNextAction(goal, compactSnapshot, step, config.maxSteps)
+
+            emitEvent("agentAction", mapOf(
+                "action" to action.action,
+                "params" to action.params.toString(),
+                "reasoning" to action.reasoning
+            ))
+            Log.i(TAG, "Action: ${action.action}, Reasoning: ${action.reasoning}")
+
+            // 5. DONE CHECK
+            if (action.action == "complete_task") {
+                Log.i(TAG, "Task completed!")
+                emitEvent("agentComplete", mapOf("steps" to step, "message" to action.reasoning))
+                return AgentResult(true, action.reasoning, step)
+            }
+
+            // 6. ACT - Execute the action
+            // Capture fresh snapshot to ensure we search in current UI state
+            val freshSnapshot = AccessibilityController.getUiSnapshot()
+            val outcome = if (freshSnapshot != null) {
+                Log.d(TAG, "Captured fresh snapshot before action (${freshSnapshot.nodes.size} nodes)")
+                executeActionWithSnapshot(action, freshSnapshot)
+            } else {
+                Log.w(TAG, "Failed to capture fresh snapshot before action, using fallback")
+                executeAction(action)
+            }
+            emitEvent("actionResult", mapOf(
+                "success" to outcome.success,
+                "message" to outcome.message
+            ))
+            Log.d(TAG, "Action outcome: ${outcome.message}")
+
+            // Track click coordinates to detect repeated clicks on same spot
+            if (action.action == "click_by_index") {
+                val currentCoordinates = extractCoordinatesFromMessage(outcome.message)
+                if (currentCoordinates != null) {
+                    if (currentCoordinates == lastClickCoordinates) {
+                        sameCoordinateClickCount++
+                        Log.d(TAG, "Same coordinates clicked ${sameCoordinateClickCount} times: $currentCoordinates")
+                    } else {
+                        sameCoordinateClickCount = 1
+                        lastClickCoordinates = currentCoordinates
+                    }
+                }
+            } else {
+                // Reset coordinate tracking for non-click actions
+                sameCoordinateClickCount = 0
+                lastClickCoordinates = null
+            }
+
+            // Track consecutive failures for stuck detection
+            if (!outcome.success) {
+                consecutiveFailures++
+                emitEvent("agentThink", mapOf("message" to "Action failed: ${outcome.message} (failure #${consecutiveFailures})"))
+            } else {
+                consecutiveFailures = 0  // Reset on success
+            }
+
+            // 7. SETTLE - Wait for UI to update
+            Thread.sleep(config.actionDelayMs)
+        }
+
+        // Max steps reached
+        val finalMessage = if (step >= config.maxSteps) {
+            "Max steps ($config.maxSteps) reached"
+        } else {
+            "Agent stopped"
+        }
+
+        Log.w(TAG, finalMessage)
+        emitEvent("agentComplete", mapOf("steps" to step, "message" to finalMessage))
+        return AgentResult(false, finalMessage, step)
+    }
+
+    private fun executeAction(action: AgentAction): com.anonymous.androMolt.accessibility.ActionOutcome {
+        return when (action.action) {
+            "click_by_text" -> {
+                val text = action.params["text"] as? String ?: ""
+                AccessibilityController.clickByText(text)
+            }
+            "click_by_content_desc" -> {
+                val desc = action.params["desc"] as? String ?: ""
+                AccessibilityController.clickByContentDesc(desc)
+            }
+            "click_by_index" -> {
+                val index = when (val idx = action.params["index"]) {
+                    is Int -> idx
+                    is Double -> idx.toInt()
+                    is String -> idx.toIntOrNull() ?: 0
+                    else -> 0
+                }
+                val snapshot = AccessibilityController.getUiSnapshot()
+                if (snapshot != null) {
+                    AccessibilityController.clickByIndex(index, snapshot)
+                } else {
+                    com.anonymous.androMolt.accessibility.ActionOutcome(false, "No UI snapshot available")
+                }
+            }
+            "input_text" -> {
+                val text = action.params["text"] as? String ?: ""
+                AccessibilityController.inputText(text)
+            }
+            "press_enter" -> {
+                AccessibilityController.pressEnter()
+            }
+            "scroll" -> {
+                AccessibilityController.scrollDown()
+            }
+            "back" -> {
+                AccessibilityController.pressBack()
+            }
+            "open_app" -> {
+                val packageName = action.params["packageName"] as? String ?: ""
+                AccessibilityController.openApp(context, packageName)
+            }
+            "wait" -> {
+                val ms = when (val duration = action.params["ms"]) {
+                    is Int -> duration
+                    is Double -> duration.toInt()
+                    is String -> duration.toIntOrNull() ?: 2000
+                    else -> 2000
+                }
+                Thread.sleep(ms.toLong())
+                com.anonymous.androMolt.accessibility.ActionOutcome(true, "Waited ${ms}ms")
+            }
+            "complete_task" -> {
+                com.anonymous.androMolt.accessibility.ActionOutcome(true, "Task completed")
+            }
+            else -> {
+                com.anonymous.androMolt.accessibility.ActionOutcome(false, "Unknown action: ${action.action}")
+            }
+        }
+    }
+
+    private fun executeActionWithSnapshot(action: AgentAction, snapshot: UiSnapshot): com.anonymous.androMolt.accessibility.ActionOutcome {
+        return when (action.action) {
+            "click_by_text" -> {
+                val text = action.params["text"] as? String ?: ""
+                AccessibilityController.clickByTextWithSnapshot(text, snapshot)
+            }
+            "click_by_index" -> {
+                val index = when (val idx = action.params["index"]) {
+                    is Int -> idx
+                    is Double -> idx.toInt()
+                    is String -> idx.toIntOrNull() ?: 0
+                    else -> 0
+                }
+                AccessibilityController.clickByIndex(index, snapshot)
+            }
+            // Other actions don't benefit from snapshot-based search
+            else -> executeAction(action)
+        }
+    }
+
+    private fun isStuck(hashes: List<String>): Boolean {
+        if (hashes.size < config.stuckThreshold) return false
+
+        // Check if last N hashes are identical
+        val recent = hashes.takeLast(config.stuckThreshold)
+        val allSame = recent.distinct().size == 1
+
+        if (allSame) {
+            Log.w(TAG, "Stuck detected: same screen hash ${config.stuckThreshold} times")
+        }
+
+        return allSame
+    }
+
+    private fun hashScreen(packageName: String, elementCount: Int, compactSnapshot: String): String {
+        // Better hash: package name + element count + first clickable element
+        val lines = compactSnapshot.lines()
+        val firstClickable = lines.find { it.contains("clickable") }?.take(50) ?: ""
+
+        val hashInput = "$packageName:$elementCount:$firstClickable"
+
+        // Use MD5 for a more reliable hash
+        return try {
+            val md = MessageDigest.getInstance("MD5")
+            val digest = md.digest(hashInput.toByteArray())
+            digest.joinToString("") { "%02x".format(it) }.take(16)
+        } catch (e: Exception) {
+            hashInput.hashCode().toString()
+        }
+    }
+
+    private fun moveToBackground() {
+        try {
+            val intent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to move to background", e)
+        }
+    }
+
+    private fun emitEvent(eventName: String, data: Map<String, Any>) {
+        try {
+            val jsonData = JSONObject()
+            for ((key, value) in data) {
+                when (value) {
+                    is String -> jsonData.put(key, value)
+                    is Int -> jsonData.put(key, value)
+                    is Boolean -> jsonData.put(key, value)
+                    is Double -> jsonData.put(key, value)
+                    else -> jsonData.put(key, value.toString())
+                }
+            }
+            EventBridge.emit(eventName, jsonData)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to emit event $eventName", e)
+        }
+    }
+
+    private fun extractCoordinatesFromMessage(message: String): Pair<Int, Int>? {
+        // Extract coordinates from message like "Clicked index [10] at (540, 1024)"
+        val regex = """at \((\d+), (\d+)\)""".toRegex()
+        val matchResult = regex.find(message)
+        return if (matchResult != null && matchResult.groupValues.size >= 3) {
+            try {
+                Pair(matchResult.groupValues[1].toInt(), matchResult.groupValues[2].toInt())
+            } catch (e: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+    }
+}

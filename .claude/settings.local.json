@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(test:*)",
+      "Bash(npx expo run:android:*)",
+      "Bash(adb shell dumpsys:*)",
+      "Bash(adb install:*)",
+      "Bash(./gradlew assembleDebug:*)",
+      "Bash(./gradlew compileDebugKotlin:*)",
+      "Bash(grep:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
