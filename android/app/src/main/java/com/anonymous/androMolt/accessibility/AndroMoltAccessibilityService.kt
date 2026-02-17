@@ -94,8 +94,25 @@ class AndroMoltAccessibilityService : AccessibilityService() {
 
         // Try multiple matching strategies (most specific to least specific)
 
-        // Strategy 1: Node text or contentDescription contains search text
+        // Strategy 0 (NEW): Exact match on non-editable nodes FIRST.
+        // Prevents ambiguous short terms (e.g. "Di") from matching an EditText that
+        // already contains that text, before finding the actual contact/list-item.
         var result = traverseTree(root) { node ->
+            searchedNodes++
+            if (node.isEditable) return@traverseTree false
+            val nodeText = node.text?.toString() ?: ""
+            val nodeDesc = node.contentDescription?.toString() ?: ""
+            nodeText.equals(text, ignoreCase = true) ||
+            nodeDesc.equals(text, ignoreCase = true)
+        }
+        if (result != null) {
+            Log.d(TAG, "findNodeByText: Found via strategy 0 (exact on non-editable) after $searchedNodes nodes")
+            return result
+        }
+
+        // Strategy 1: Node text or contentDescription contains search text
+        searchedNodes = 0
+        result = traverseTree(root) { node ->
             searchedNodes++
             val nodeText = node.text?.toString() ?: ""
             val nodeDesc = node.contentDescription?.toString() ?: ""
