@@ -56,18 +56,42 @@ object FallbackHeuristics {
                 )
             }
 
-            // SCREEN D: inside a chat — type the message
-            val isInChat = screenLower.contains("type a message") ||
+            // SCREEN E: message already sent — input is empty ("type a message" placeholder)
+            // and the message appears in the chat history (non-editable node)
+            val message = extractWhatsAppMessage(goalLower)
+            val inputIsEmpty = screenLower.contains("type a message")
+            val messageSentVisible = !message.isNullOrBlank() && screenLower.contains(message.lowercase())
+            if (inputIsEmpty && messageSentVisible) {
+                Log.d(TAG, "Heuristic: WhatsApp Screen E — message sent and visible, completing task")
+                return AgentAction(
+                    action = "complete_task",
+                    params = emptyMap(),
+                    reasoning = "Fallback: Message sent and visible in chat history, task complete"
+                )
+            }
+
+            // SCREEN D: inside a chat — type the message, then click Send
+            val isInChat = inputIsEmpty ||
                 (screenLower.contains("editable") && screenLower.contains("message"))
             if (isInChat) {
-                val message = extractWhatsAppMessage(goalLower)
                 if (!message.isNullOrBlank()) {
-                    Log.d(TAG, "Heuristic: WhatsApp Screen D — typing message: $message")
-                    return AgentAction(
-                        action = "input_text",
-                        params = mapOf("text" to message),
-                        reasoning = "Fallback: In chat, typing message: $message"
-                    )
+                    // If the message is already visible in the input, click Send
+                    if (!inputIsEmpty && screenLower.contains(message.lowercase())) {
+                        Log.d(TAG, "Heuristic: WhatsApp Screen D — message already typed, clicking Send")
+                        return AgentAction(
+                            action = "click_by_content_desc",
+                            params = mapOf("desc" to "Send"),
+                            reasoning = "Fallback: Message already in input, clicking Send"
+                        )
+                    }
+                    if (!inputIsEmpty) {
+                        Log.d(TAG, "Heuristic: WhatsApp Screen D — typing message: $message")
+                        return AgentAction(
+                            action = "input_text",
+                            params = mapOf("text" to message),
+                            reasoning = "Fallback: In chat, typing message: $message"
+                        )
+                    }
                 }
             }
         }

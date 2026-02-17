@@ -163,8 +163,18 @@ SCREEN C — Search results (contact names/numbers listed below the search bar):
   → This is MANDATORY before typing any message — you are NOT in the chat yet.
 
 SCREEN D — Chat/conversation (message input bar at very bottom, chat bubbles above):
-  → input_text {"text":"<message from goal>"}
-  → then click_by_content_desc {"desc":"Send"}
+  STEP 1: If the message input appears EMPTY → input_text {"text":"<message from goal>"}
+  STEP 2: As soon as the message text is visible in the input → click_by_content_desc {"desc":"Send"}
+  CRITICAL: If you see the message text already typed in the input field (e.g. "hi" is visible),
+    your action MUST be click_by_content_desc {"desc":"Send"} — NEVER type it again.
+  The send button is the green arrow button; its content description is "Send".
+
+SCREEN E — Message SENT (your message appears as a green chat bubble with a timestamp + tick marks):
+  → complete_task IMMEDIATELY — the message has been delivered, the goal is achieved.
+  → Signs the message was sent: green/blue chat bubble on the right side with "✓" or "✓✓" marks,
+    input field shows "Type a message" or "Message" placeholder (now empty), microphone button
+    visible instead of the Send arrow.
+  → DO NOT click Send on an empty input — that does nothing and the task is already done.
 
 HOW TO TELL WHICH SCREEN:
 - Screen A: many chat threads visible, coloured circular "New chat" button bottom-right
@@ -177,6 +187,8 @@ CRITICAL:
   result BEFORE typing the message. Skipping this step means you are not in the chat yet.
 - The search term can be a contact name OR a phone number — search for exactly what the
   goal says, then click the matching entry in the list.
+- On Screen D: you only need to type the message ONCE. If the message is already in the
+  input field, skip straight to clicking Send. Typing again will just append duplicate text.
 NEVER use the top-right magnifier — it opens media search, not contacts.
 If you see "Ask Meta AI or Search" or filter chips (Unread/Photos/Videos), press back,
 then use "New chat".

@@ -42,7 +42,7 @@ export default function ChatInterface() {
   const [permissionsGranted, setPermissionsGranted] = useState(false);
   const [checkingPermissions, setCheckingPermissions] = useState(true);
   const [agentLogs, setAgentLogs] = useState<AgentEvent[]>([]);
-  const [agentProgress, setAgentProgress] = useState({ step: 0, maxSteps: 20, message: '' });
+  const [agentProgress, setAgentProgress] = useState({ step: 0, maxSteps: 50, message: '' });
   const [isAgentRunning, setIsAgentRunning] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
 
@@ -362,7 +362,7 @@ Let the agent work...`,
               </View>
               <View style={styles.agentHeaderRight}>
                 <Text style={styles.agentProgressStep}>
-                  {agentProgress.step}/{agentProgress.maxSteps}
+                  Step {agentProgress.step}
                 </Text>
                 <TouchableOpacity style={styles.cancelButton} onPress={handleCancelAgent}>
                   <Text style={styles.cancelButtonText}>✕ Cancel</Text>
@@ -373,7 +373,7 @@ Let the agent work...`,
               <View
                 style={[
                   styles.progressBar,
-                  { width: `${(agentProgress.step / agentProgress.maxSteps) * 100}%` }
+                  { width: '100%', opacity: 0.4 + (agentProgress.step % 3) * 0.2 }
                 ]}
               />
             </View>
