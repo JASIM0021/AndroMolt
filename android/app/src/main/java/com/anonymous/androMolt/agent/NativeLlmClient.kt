@@ -1,6 +1,7 @@
 package com.anonymous.androMolt.agent
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonObject
@@ -41,10 +42,12 @@ class NativeLlmClient(private val context: Context) {
         goal: String,
         screenSnapshot: String,
         step: Int,
-        maxSteps: Int
+        maxSteps: Int,
+        screenshot: android.graphics.Bitmap? = null,
+        isQaMode: Boolean = false
     ): AgentAction {
         try {
-            val prompt = buildPrompt(goal, screenSnapshot, step, maxSteps)
+            val prompt = buildPrompt(goal, screenSnapshot, step, maxSteps, isQaMode)
 
             // Try OpenAI first
             if (!openaiApiKey.isNullOrBlank()) {
@@ -60,7 +63,21 @@ class NativeLlmClient(private val context: Context) {
                 }
             }
 
-            // Fallback to Gemini
+            // Try Gemini Vision if screenshot available
+            if (!geminiApiKey.isNullOrBlank() && screenshot != null) {
+                try {
+                    val response = callGeminiVision(prompt, screenshot)
+                    val action = parseActionFromResponse(response)
+                    if (action != null) {
+                        Log.d(TAG, "Gemini Vision returned action: ${action.action}")
+                        return action
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Gemini Vision call failed: ${e.message}")
+                }
+            }
+
+            // Fallback to Gemini text-only
             if (!geminiApiKey.isNullOrBlank()) {
                 try {
                     val response = callGemini(prompt)
@@ -84,8 +101,8 @@ class NativeLlmClient(private val context: Context) {
         }
     }
 
-    private fun buildPrompt(goal: String, screenSnapshot: String, step: Int, maxSteps: Int): String {
-        return """
+    private fun buildPrompt(goal: String, screenSnapshot: String, step: Int, maxSteps: Int, isQaMode: Boolean = false): String {
+        return ("""
 You are an AI agent controlling an Android device to complete user goals.
 
 GOAL: $goal
@@ -214,7 +231,18 @@ YouTube Mini-Player / Now Playing:
 - If you see a full-screen video player with a seek bar, the task is complete.
 
 Respond now with ONLY the JSON action:
-""".trimIndent()
+""" + if (isQaMode) """
+
+QA TESTER MODE — You are acting as an Android QA engineer:
+1. For each action, evaluate: did the expected UI element/response appear?
+2. Prefix your reasoning with [PASS] if the step behaved correctly, or [FAIL] if:
+   - Expected element not found
+   - Error message appeared
+   - Screen is blank/stuck
+   - Loading spinner did not resolve
+3. At the end of the test, use complete_task with reasoning summarising findings.
+4. You are testing, so be more thorough — check for empty states, errors, and edge cases.
+""" else "").trimIndent()
     }
 
     private fun callOpenAI(prompt: String): String {
@@ -278,6 +306,43 @@ Respond now with ONLY the JSON action:
                 .getAsJsonArray("parts")
                 .get(0).asJsonObject
                 .get("text").asString
+        }
+    }
+
+    private fun callGeminiVision(prompt: String, bitmap: android.graphics.Bitmap): String {
+        // Scale down to max 768px wide to limit token usage
+        val scale = minOf(1f, 768f / bitmap.width)
+        val scaled = android.graphics.Bitmap.createScaledBitmap(
+            bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true
+        )
+        val stream = java.io.ByteArrayOutputStream()
+        scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, stream)
+        val base64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+        scaled.recycle()
+
+        val requestBody = JsonObject().apply {
+            add("contents", gson.toJsonTree(listOf(mapOf("parts" to listOf(
+                mapOf("inline_data" to mapOf("mime_type" to "image/jpeg", "data" to base64)),
+                mapOf("text" to prompt)
+            )))))
+            add("generationConfig", gson.toJsonTree(mapOf(
+                "temperature" to 0.3, "maxOutputTokens" to 200
+            )))
+        }
+
+        val request = Request.Builder()
+            .url("$GEMINI_API_URL?key=$geminiApiKey")
+            .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
+            .addHeader("Content-Type", "application/json")
+            .build()
+
+        okHttpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw Exception("Gemini Vision error: ${response.code}")
+            val body = response.body?.string() ?: throw Exception("Empty response")
+            val json = gson.fromJson(body, JsonObject::class.java)
+            return json.getAsJsonArray("candidates").get(0).asJsonObject
+                .getAsJsonObject("content").getAsJsonArray("parts")
+                .get(0).asJsonObject.get("text").asString
         }
     }
 

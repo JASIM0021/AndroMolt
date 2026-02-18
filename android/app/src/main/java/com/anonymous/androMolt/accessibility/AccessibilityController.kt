@@ -367,4 +367,37 @@ object AccessibilityController {
         }
         return null
     }
+
+    fun takeScreenshot(): android.graphics.Bitmap? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val service = getService() ?: return null
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var bitmap: android.graphics.Bitmap? = null
+        try {
+            service.takeScreenshot(
+                android.view.Display.DEFAULT_DISPLAY,
+                service.mainExecutor,
+                object : android.accessibilityservice.AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(result: android.accessibilityservice.AccessibilityService.ScreenshotResult) {
+                        try {
+                            // Use reflection: ScreenshotResult API surface differs across SDK stubs
+                            val hwBuffer = result.javaClass.getMethod("getHardwareBitmap").invoke(result)
+                                    as android.hardware.HardwareBuffer
+                            bitmap = android.graphics.Bitmap.wrapHardwareBuffer(hwBuffer, null)
+                                ?.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                            runCatching { result.javaClass.getMethod("close").invoke(result) }
+                        } catch (e: Exception) {
+                            android.util.Log.w("AccessibilityController", "Screenshot extract failed: ${e.message}")
+                        }
+                        latch.countDown()
+                    }
+                    override fun onFailure(errorCode: Int) { latch.countDown() }
+                }
+            )
+            latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            android.util.Log.w("AccessibilityController", "takeScreenshot failed: ${e.message}")
+        }
+        return bitmap
+    }
 }

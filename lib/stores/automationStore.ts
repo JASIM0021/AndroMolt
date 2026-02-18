@@ -62,7 +62,7 @@ import { AgentAction, AgentResult } from '../../types/agent';
 
 interface ChatMessage {
   id: string;
-  type: 'user' | 'assistant' | 'system';
+  type: 'user' | 'assistant' | 'system' | 'report';
   content: string;
   timestamp: string;
   actionPlan?: ActionPlan;

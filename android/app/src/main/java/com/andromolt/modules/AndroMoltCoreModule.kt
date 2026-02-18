@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.accessibility.AccessibilityNodeInfo
+import com.google.gson.Gson
 import com.anonymous.androMolt.accessibility.AccessibilityController
 import com.anonymous.androMolt.accessibility.AndroMoltAccessibilityService
 import com.anonymous.androMolt.accessibility.UiTreeBuilder
@@ -431,6 +432,26 @@ class AndroMoltCoreModule(reactContext: ReactApplicationContext) : ReactContextB
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("ERR_BACKGROUND", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getInstalledApps(promise: Promise) {
+        try {
+            val pm = reactApplicationContext.packageManager
+            val intent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+                addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+            }
+            val apps = pm.queryIntentActivities(intent, 0)
+                .sortedBy { it.loadLabel(pm).toString().lowercase() }
+                .map { info -> mapOf(
+                    "name" to info.loadLabel(pm).toString(),
+                    "packageName" to info.activityInfo.packageName
+                )}
+            val gson = Gson()
+            promise.resolve(gson.toJson(apps))
+        } catch (e: Exception) {
+            promise.reject("ERR_INSTALLED_APPS", e.message)
         }
     }
 

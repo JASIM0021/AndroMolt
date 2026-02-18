@@ -72,16 +72,24 @@ class NativeAgentLoop(
     }
 
     private fun runLoop(goal: String): AgentResult {
+        // Extract TARGET_APP if present and determine QA mode
+        val targetAppMatch = Regex("""\[TARGET_APP:([^\]]+)\]""").find(goal)
+        val targetPackage = targetAppMatch?.groupValues?.get(1)
+        val cleanGoal = goal.replace(targetAppMatch?.value ?: "", "").trim()
+        val isQaMode = targetPackage != null ||
+            Regex("(?i)\\b(test|check|verify|qa|assert|validate)\\b").containsMatchIn(cleanGoal)
+        val testSteps = mutableListOf<TestStep>()
+
         var step = 0
         val screenHashes = mutableListOf<String>()
         var consecutiveFailures = 0
-        var lastClickCoordinates: Pair<Int, Int>? = null
-        var sameCoordinateClickCount = 0
+        var lastClickAction: String? = null
+        var sameActionClickCount = 0
 
-        emitEvent("agentStart", mapOf("goal" to goal))
+        emitEvent("agentStart", mapOf("goal" to cleanGoal))
 
         // Pre-launch: force-fresh open the target app if identifiable from goal
-        detectTargetPackage(goal)?.let { pkg ->
+        (targetPackage ?: detectTargetPackage(cleanGoal))?.let { pkg ->
             preLaunchAppFresh(pkg)
         }
 
@@ -109,17 +117,17 @@ class NativeAgentLoop(
             val hash = hashScreen(snapshot.packageName, snapshot.nodes.size, compactSnapshot)
             screenHashes.add(hash)
 
-            // Stuck detection: same screen OR same coordinates clicked repeatedly
+            // Stuck detection: same screen OR same action repeated 3+ times
             val isStuckOnScreen = isStuck(screenHashes)
-            val isStuckOnCoordinates = sameCoordinateClickCount >= 3
+            val isStuckOnAction = sameActionClickCount >= 3
 
-            if (isStuckOnScreen || isStuckOnCoordinates) {
-                if (isStuckOnCoordinates) {
-                    Log.w(TAG, "Stuck clicking same coordinates ${sameCoordinateClickCount} times, trying scroll")
-                    emitEvent("agentThink", mapOf("message" to "Stuck clicking same spot, scrolling to find other results"))
+            if (isStuckOnScreen || isStuckOnAction) {
+                if (isStuckOnAction) {
+                    Log.w(TAG, "Stuck repeating same action ${sameActionClickCount} times ($lastClickAction), trying scroll")
+                    emitEvent("agentThink", mapOf("message" to "Stuck repeating same action, scrolling to find other elements"))
                     AccessibilityController.scrollDown()
-                    sameCoordinateClickCount = 0
-                    lastClickCoordinates = null
+                    sameActionClickCount = 0
+                    lastClickAction = null
                 } else {
                     val snapLower = compactSnapshot.lowercase()
                     val onWhatsApp = snapshot.packageName.contains("whatsapp", ignoreCase = true)
@@ -134,7 +142,9 @@ class NativeAgentLoop(
                         onWhatsApp && snapLower.contains("type a message") -> {
                             Log.w(TAG, "WhatsApp message sent (empty input), completing task")
                             emitEvent("agentComplete", mapOf("steps" to step, "message" to "Message sent successfully"))
-                            return AgentResult(true, "Message sent to contact", step)
+                            val waResult = AgentResult(true, "Message sent to contact", step)
+                            emitQaReportIfNeeded(isQaMode, waResult, testSteps, cleanGoal, targetPackage)
+                            return waResult
                         }
                         else -> {
                             Log.w(TAG, "Stuck detection triggered (same screen + ${consecutiveFailures} failures), pressing back")
@@ -160,7 +170,9 @@ class NativeAgentLoop(
 
             // 4. PLAN - Get next action from LLM or fallback
             Log.d(TAG, "Getting next action from planner")
-            val action = llmClient.getNextAction(goal, compactSnapshot, step, config.maxSteps)
+            val screenshot = AccessibilityController.takeScreenshot()
+            val action = llmClient.getNextAction(cleanGoal, compactSnapshot, step, config.maxSteps, screenshot, isQaMode)
+            screenshot?.recycle()
 
             emitEvent("agentAction", mapOf(
                 "action" to action.action,
@@ -173,7 +185,9 @@ class NativeAgentLoop(
             if (action.action == "complete_task") {
                 Log.i(TAG, "Task completed!")
                 emitEvent("agentComplete", mapOf("steps" to step, "message" to action.reasoning))
-                return AgentResult(true, action.reasoning, step)
+                val completeResult = AgentResult(true, action.reasoning, step)
+                emitQaReportIfNeeded(isQaMode, completeResult, testSteps, cleanGoal, targetPackage)
+                return completeResult
             }
 
             // 6. ACT - Execute the action
@@ -192,22 +206,33 @@ class NativeAgentLoop(
             ))
             Log.d(TAG, "Action outcome: ${outcome.message}")
 
-            // Track click coordinates to detect repeated clicks on same spot
-            if (action.action == "click_by_index") {
-                val currentCoordinates = extractCoordinatesFromMessage(outcome.message)
-                if (currentCoordinates != null) {
-                    if (currentCoordinates == lastClickCoordinates) {
-                        sameCoordinateClickCount++
-                        Log.d(TAG, "Same coordinates clicked ${sameCoordinateClickCount} times: $currentCoordinates")
-                    } else {
-                        sameCoordinateClickCount = 1
-                        lastClickCoordinates = currentCoordinates
-                    }
+            // Accumulate test steps in QA mode
+            if (isQaMode) {
+                val passed = outcome.success && !action.reasoning.startsWith("[FAIL]", ignoreCase = true)
+                testSteps.add(TestStep(
+                    step = step,
+                    action = action.action,
+                    params = action.params.toString(),
+                    reasoning = action.reasoning.removePrefix("[PASS]").removePrefix("[FAIL]").trim(),
+                    outcome = outcome.message,
+                    passed = passed
+                ))
+            }
+
+            // Track repeated click actions to detect stuck loops
+            if (action.action in listOf("click_by_index", "click_by_text", "click_by_content_desc")) {
+                val actionKey = "${action.action}:${action.params}"
+                if (actionKey == lastClickAction) {
+                    sameActionClickCount++
+                    Log.d(TAG, "Same action repeated ${sameActionClickCount} times: $actionKey")
+                } else {
+                    sameActionClickCount = 1
+                    lastClickAction = actionKey
                 }
             } else {
-                // Reset coordinate tracking for non-click actions
-                sameCoordinateClickCount = 0
-                lastClickCoordinates = null
+                // Reset tracking for non-click actions
+                sameActionClickCount = 0
+                lastClickAction = null
             }
 
             // Track consecutive failures for stuck detection
@@ -231,7 +256,9 @@ class NativeAgentLoop(
 
         Log.w(TAG, finalMessage)
         emitEvent("agentComplete", mapOf("steps" to step, "message" to finalMessage))
-        return AgentResult(false, finalMessage, step)
+        val finalResult = AgentResult(false, finalMessage, step)
+        emitQaReportIfNeeded(isQaMode, finalResult, testSteps, cleanGoal, targetPackage)
+        return finalResult
     }
 
     private fun executeAction(action: AgentAction): com.anonymous.androMolt.accessibility.ActionOutcome {
@@ -357,6 +384,48 @@ class NativeAgentLoop(
         }
     }
 
+    private fun emitQaReportIfNeeded(
+        isQaMode: Boolean,
+        result: AgentResult,
+        testSteps: List<TestStep>,
+        cleanGoal: String,
+        targetPackage: String?
+    ) {
+        if (!isQaMode) return
+        try {
+            val passedCount = testSteps.count { it.passed }
+            val overallPassed = result.success && passedCount > testSteps.size / 2
+            val testRun = TestRun(
+                goal = cleanGoal,
+                targetApp = targetPackage,
+                timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
+                    java.util.Locale.US).format(java.util.Date()),
+                overallPassed = overallPassed,
+                totalSteps = testSteps.size,
+                passedSteps = passedCount,
+                failedSteps = testSteps.size - passedCount,
+                steps = testSteps,
+                summary = result.message
+            )
+            val savedPath = try {
+                QaReportWriter.write(context, testRun)
+            } catch (e: Exception) {
+                Log.w(TAG, "QA report write failed: ${e.message}")
+                "save_failed"
+            }
+            emitEvent("agentReport", mapOf(
+                "overallPassed" to overallPassed,
+                "passedSteps" to passedCount,
+                "failedSteps" to (testSteps.size - passedCount),
+                "totalSteps" to testSteps.size,
+                "savedPath" to savedPath,
+                "goal" to cleanGoal
+            ))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to emit QA report", e)
+        }
+    }
+
     private fun emitEvent(eventName: String, data: Map<String, Any>) {
         try {
             val jsonData = JSONObject()
@@ -408,18 +477,4 @@ class NativeAgentLoop(
         }
     }
 
-    private fun extractCoordinatesFromMessage(message: String): Pair<Int, Int>? {
-        // Extract coordinates from message like "Clicked index [10] at (540, 1024)"
-        val regex = """at \((\d+), (\d+)\)""".toRegex()
-        val matchResult = regex.find(message)
-        return if (matchResult != null && matchResult.groupValues.size >= 3) {
-            try {
-                Pair(matchResult.groupValues[1].toInt(), matchResult.groupValues[2].toInt())
-            } catch (e: Exception) {
-                null
-            }
-        } else {
-            null
-        }
-    }
 }
