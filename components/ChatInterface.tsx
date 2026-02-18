@@ -14,6 +14,8 @@ import {
   NativeModules,
   NativeEventEmitter,
   DeviceEventEmitter,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -29,7 +31,7 @@ const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || '';
 
 interface ChatMessage {
   id: string;
-  type: 'user' | 'assistant' | 'system';
+  type: 'user' | 'assistant' | 'system' | 'report';
   content: string;
   timestamp: string;
   actionPlan?: any;
@@ -45,6 +47,9 @@ export default function ChatInterface() {
   const [agentProgress, setAgentProgress] = useState({ step: 0, maxSteps: 50, message: '' });
   const [isAgentRunning, setIsAgentRunning] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
+  const [installedApps, setInstalledApps] = useState<{name: string, packageName: string}[]>([]);
+  const [selectedApp, setSelectedApp] = useState<{name: string, packageName: string} | null>(null);
+  const [showAppPicker, setShowAppPicker] = useState(false);
 
   const {
     chatMessages,
@@ -116,6 +121,22 @@ export default function ChatInterface() {
       }]);
     };
 
+    const handleAgentReport = (data: any) => {
+      const icon = data.overallPassed ? '✅' : '❌';
+      const reportText =
+        `${icon} QA Report: "${data.goal}"\n` +
+        `━━━━━━━━━━━━━━━━\n` +
+        `✅ Passed: ${data.passedSteps}/${data.totalSteps} steps\n` +
+        `❌ Failed: ${data.failedSteps}/${data.totalSteps} steps\n` +
+        `💾 Saved: ${data.savedPath}`;
+      addChatMessage({
+        id: Date.now().toString(),
+        type: 'report',
+        content: reportText,
+        timestamp: new Date().toISOString(),
+      });
+    };
+
     // Subscribe to native events
     const agentStartListener = DeviceEventEmitter.addListener('agentStart', handleNativeAgentStart);
     const agentStepListener = DeviceEventEmitter.addListener('agentStep', handleNativeAgentStep);
@@ -123,6 +144,7 @@ export default function ChatInterface() {
     const actionResultListener = DeviceEventEmitter.addListener('actionResult', handleNativeActionResult);
     const agentThinkListener = DeviceEventEmitter.addListener('agentThink', handleNativeAgentThink);
     const agentCompleteListener = DeviceEventEmitter.addListener('agentComplete', handleNativeAgentComplete);
+    const agentReportListener = DeviceEventEmitter.addListener('agentReport', handleAgentReport);
 
     return () => {
       agentStartListener.remove();
@@ -131,7 +153,17 @@ export default function ChatInterface() {
       actionResultListener.remove();
       agentThinkListener.remove();
       agentCompleteListener.remove();
+      agentReportListener.remove();
     };
+  }, []);
+
+  // Load installed apps on mount for app picker
+  useEffect(() => {
+    if (AndroMoltCore) {
+      AndroMoltCore.getInstalledApps()
+        .then((json: string) => setInstalledApps(JSON.parse(json)))
+        .catch(() => {});
+    }
   }, []);
 
   // Auto-scroll to bottom when new messages arrive
@@ -227,10 +259,12 @@ Let the agent work...`,
       });
 
       // Use the native agent loop for reliable background execution
-      // The agent will naturally open the target app (e.g., YouTube) as first action,
-      // which will bring it to foreground and put AndroMolt in background automatically.
+      // Prepend [TARGET_APP:] prefix if an app was selected via the picker.
+      const fullGoal = selectedApp
+        ? `[TARGET_APP:${selectedApp.packageName}] ${userMessage}`
+        : userMessage;
       const result = await AndroMoltCore.runNativeAgent(
-        userMessage,
+        fullGoal,
         OPENAI_API_KEY || null,
         GEMINI_API_KEY || null
       );
@@ -285,10 +319,11 @@ Let the agent work...`,
   const renderMessage = (message: ChatMessage) => {
     const isUser = message.type === 'user';
     const isSystem = message.type === 'system';
+    const isReport = message.type === 'report';
 
     return (
       <View key={message.id} style={[styles.messageContainer, isUser && styles.userMessage]}>
-        {!isUser && !isSystem && (
+        {!isUser && !isSystem && !isReport && (
           <View style={styles.avatarContainer}>
             <View style={styles.avatar}>
               <Text style={styles.avatarText}>A</Text>
@@ -300,11 +335,13 @@ Let the agent work...`,
           styles.messageBubble,
           isUser && styles.userBubble,
           isSystem && styles.systemBubble,
+          isReport && styles.reportBubble,
         ]}>
           <Text style={[
             styles.messageText,
             isUser && styles.userText,
             isSystem && styles.systemText,
+            isReport && styles.reportText,
           ]}>
             {message.content}
           </Text>
@@ -462,6 +499,21 @@ Let the agent work...`,
           )}
         </ScrollView>
 
+        {/* App Target Row */}
+        <View style={styles.appTargetRow}>
+          <TouchableOpacity onPress={() => setShowAppPicker(true)} style={styles.appTargetBtn}>
+            <Text style={styles.appTargetText}>
+              {selectedApp ? `📱 ${selectedApp.name}` : '📱 All apps'}
+            </Text>
+            <Text style={styles.appTargetChevron}>▾</Text>
+          </TouchableOpacity>
+          {selectedApp && (
+            <TouchableOpacity onPress={() => setSelectedApp(null)}>
+              <Text style={styles.appTargetClear}>✕</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
         {/* Input Area */}
         <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           <View style={styles.inputRow}>
@@ -496,6 +548,30 @@ Let the agent work...`,
             <Text style={styles.charCount}>{inputText.length}/500</Text>
           )}
         </View>
+        {/* App Picker Modal */}
+        <Modal visible={showAppPicker} animationType="slide" transparent>
+          <View style={styles.pickerOverlay}>
+            <View style={styles.pickerSheet}>
+              <Text style={styles.pickerTitle}>Select Target App</Text>
+              <FlatList
+                data={installedApps}
+                keyExtractor={item => item.packageName}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.pickerItem}
+                    onPress={() => { setSelectedApp(item); setShowAppPicker(false); }}
+                  >
+                    <Text style={styles.pickerItemText}>{item.name}</Text>
+                    <Text style={styles.pickerItemPkg}>{item.packageName}</Text>
+                  </TouchableOpacity>
+                )}
+              />
+              <TouchableOpacity onPress={() => setShowAppPicker(false)}>
+                <Text style={styles.pickerCancel}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -885,5 +961,102 @@ const styles = StyleSheet.create({
     color: '#fca5a5',
     fontSize: 11,
     fontWeight: '600',
+  },
+
+  // ── Report Bubble ─────────────────────────────────────────
+  reportBubble: {
+    backgroundColor: '#f0fdf4',
+    borderLeftWidth: 3,
+    borderLeftColor: '#16a34a',
+    borderRadius: 12,
+    borderBottomLeftRadius: 4,
+    maxWidth: '92%',
+  },
+  reportText: {
+    color: '#14532d',
+    fontSize: 13,
+    lineHeight: 20,
+    fontFamily: Platform.OS === 'android' ? 'monospace' : 'Courier',
+  },
+
+  // ── App Target Row ────────────────────────────────────────
+  appTargetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#e8eaf0',
+    gap: 8,
+  },
+  appTargetBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f0f4ff',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    gap: 4,
+  },
+  appTargetText: {
+    fontSize: 13,
+    color: '#007AFF',
+    fontWeight: '500',
+  },
+  appTargetChevron: {
+    fontSize: 12,
+    color: '#007AFF',
+  },
+  appTargetClear: {
+    fontSize: 14,
+    color: '#888',
+    paddingHorizontal: 6,
+  },
+
+  // ── App Picker Modal ──────────────────────────────────────
+  pickerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  pickerSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingTop: 16,
+    paddingBottom: 32,
+    maxHeight: '75%',
+  },
+  pickerTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a1a2e',
+    textAlign: 'center',
+    marginBottom: 12,
+    paddingHorizontal: 16,
+  },
+  pickerItem: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  pickerItemText: {
+    fontSize: 15,
+    color: '#1a1a2e',
+    fontWeight: '500',
+  },
+  pickerItemPkg: {
+    fontSize: 11,
+    color: '#888',
+    marginTop: 2,
+  },
+  pickerCancel: {
+    textAlign: 'center',
+    fontSize: 15,
+    color: '#dc2626',
+    fontWeight: '600',
+    paddingVertical: 16,
   },
 });

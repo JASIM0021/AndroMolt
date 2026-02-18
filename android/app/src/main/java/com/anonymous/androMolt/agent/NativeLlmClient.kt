@@ -43,10 +43,11 @@ class NativeLlmClient(private val context: Context) {
         screenSnapshot: String,
         step: Int,
         maxSteps: Int,
-        screenshot: android.graphics.Bitmap? = null
+        screenshot: android.graphics.Bitmap? = null,
+        isQaMode: Boolean = false
     ): AgentAction {
         try {
-            val prompt = buildPrompt(goal, screenSnapshot, step, maxSteps)
+            val prompt = buildPrompt(goal, screenSnapshot, step, maxSteps, isQaMode)
 
             // Try OpenAI first
             if (!openaiApiKey.isNullOrBlank()) {
@@ -100,8 +101,8 @@ class NativeLlmClient(private val context: Context) {
         }
     }
 
-    private fun buildPrompt(goal: String, screenSnapshot: String, step: Int, maxSteps: Int): String {
-        return """
+    private fun buildPrompt(goal: String, screenSnapshot: String, step: Int, maxSteps: Int, isQaMode: Boolean = false): String {
+        return ("""
 You are an AI agent controlling an Android device to complete user goals.
 
 GOAL: $goal
@@ -230,7 +231,18 @@ YouTube Mini-Player / Now Playing:
 - If you see a full-screen video player with a seek bar, the task is complete.
 
 Respond now with ONLY the JSON action:
-""".trimIndent()
+""" + if (isQaMode) """
+
+QA TESTER MODE — You are acting as an Android QA engineer:
+1. For each action, evaluate: did the expected UI element/response appear?
+2. Prefix your reasoning with [PASS] if the step behaved correctly, or [FAIL] if:
+   - Expected element not found
+   - Error message appeared
+   - Screen is blank/stuck
+   - Loading spinner did not resolve
+3. At the end of the test, use complete_task with reasoning summarising findings.
+4. You are testing, so be more thorough — check for empty states, errors, and edge cases.
+""" else "").trimIndent()
     }
 
     private fun callOpenAI(prompt: String): String {

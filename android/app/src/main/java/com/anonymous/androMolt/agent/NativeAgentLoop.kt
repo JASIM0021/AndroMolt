@@ -72,16 +72,24 @@ class NativeAgentLoop(
     }
 
     private fun runLoop(goal: String): AgentResult {
+        // Extract TARGET_APP if present and determine QA mode
+        val targetAppMatch = Regex("""\[TARGET_APP:([^\]]+)\]""").find(goal)
+        val targetPackage = targetAppMatch?.groupValues?.get(1)
+        val cleanGoal = goal.replace(targetAppMatch?.value ?: "", "").trim()
+        val isQaMode = targetPackage != null ||
+            Regex("(?i)\\b(test|check|verify|qa|assert|validate)\\b").containsMatchIn(cleanGoal)
+        val testSteps = mutableListOf<TestStep>()
+
         var step = 0
         val screenHashes = mutableListOf<String>()
         var consecutiveFailures = 0
         var lastClickAction: String? = null
         var sameActionClickCount = 0
 
-        emitEvent("agentStart", mapOf("goal" to goal))
+        emitEvent("agentStart", mapOf("goal" to cleanGoal))
 
         // Pre-launch: force-fresh open the target app if identifiable from goal
-        detectTargetPackage(goal)?.let { pkg ->
+        (targetPackage ?: detectTargetPackage(cleanGoal))?.let { pkg ->
             preLaunchAppFresh(pkg)
         }
 
@@ -134,7 +142,9 @@ class NativeAgentLoop(
                         onWhatsApp && snapLower.contains("type a message") -> {
                             Log.w(TAG, "WhatsApp message sent (empty input), completing task")
                             emitEvent("agentComplete", mapOf("steps" to step, "message" to "Message sent successfully"))
-                            return AgentResult(true, "Message sent to contact", step)
+                            val waResult = AgentResult(true, "Message sent to contact", step)
+                            emitQaReportIfNeeded(isQaMode, waResult, testSteps, cleanGoal, targetPackage)
+                            return waResult
                         }
                         else -> {
                             Log.w(TAG, "Stuck detection triggered (same screen + ${consecutiveFailures} failures), pressing back")
@@ -161,7 +171,7 @@ class NativeAgentLoop(
             // 4. PLAN - Get next action from LLM or fallback
             Log.d(TAG, "Getting next action from planner")
             val screenshot = AccessibilityController.takeScreenshot()
-            val action = llmClient.getNextAction(goal, compactSnapshot, step, config.maxSteps, screenshot)
+            val action = llmClient.getNextAction(cleanGoal, compactSnapshot, step, config.maxSteps, screenshot, isQaMode)
             screenshot?.recycle()
 
             emitEvent("agentAction", mapOf(
@@ -175,7 +185,9 @@ class NativeAgentLoop(
             if (action.action == "complete_task") {
                 Log.i(TAG, "Task completed!")
                 emitEvent("agentComplete", mapOf("steps" to step, "message" to action.reasoning))
-                return AgentResult(true, action.reasoning, step)
+                val completeResult = AgentResult(true, action.reasoning, step)
+                emitQaReportIfNeeded(isQaMode, completeResult, testSteps, cleanGoal, targetPackage)
+                return completeResult
             }
 
             // 6. ACT - Execute the action
@@ -193,6 +205,19 @@ class NativeAgentLoop(
                 "message" to outcome.message
             ))
             Log.d(TAG, "Action outcome: ${outcome.message}")
+
+            // Accumulate test steps in QA mode
+            if (isQaMode) {
+                val passed = outcome.success && !action.reasoning.startsWith("[FAIL]", ignoreCase = true)
+                testSteps.add(TestStep(
+                    step = step,
+                    action = action.action,
+                    params = action.params.toString(),
+                    reasoning = action.reasoning.removePrefix("[PASS]").removePrefix("[FAIL]").trim(),
+                    outcome = outcome.message,
+                    passed = passed
+                ))
+            }
 
             // Track repeated click actions to detect stuck loops
             if (action.action in listOf("click_by_index", "click_by_text", "click_by_content_desc")) {
@@ -231,7 +256,9 @@ class NativeAgentLoop(
 
         Log.w(TAG, finalMessage)
         emitEvent("agentComplete", mapOf("steps" to step, "message" to finalMessage))
-        return AgentResult(false, finalMessage, step)
+        val finalResult = AgentResult(false, finalMessage, step)
+        emitQaReportIfNeeded(isQaMode, finalResult, testSteps, cleanGoal, targetPackage)
+        return finalResult
     }
 
     private fun executeAction(action: AgentAction): com.anonymous.androMolt.accessibility.ActionOutcome {
@@ -354,6 +381,48 @@ class NativeAgentLoop(
             context.startActivity(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to move to background", e)
+        }
+    }
+
+    private fun emitQaReportIfNeeded(
+        isQaMode: Boolean,
+        result: AgentResult,
+        testSteps: List<TestStep>,
+        cleanGoal: String,
+        targetPackage: String?
+    ) {
+        if (!isQaMode) return
+        try {
+            val passedCount = testSteps.count { it.passed }
+            val overallPassed = result.success && passedCount > testSteps.size / 2
+            val testRun = TestRun(
+                goal = cleanGoal,
+                targetApp = targetPackage,
+                timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
+                    java.util.Locale.US).format(java.util.Date()),
+                overallPassed = overallPassed,
+                totalSteps = testSteps.size,
+                passedSteps = passedCount,
+                failedSteps = testSteps.size - passedCount,
+                steps = testSteps,
+                summary = result.message
+            )
+            val savedPath = try {
+                QaReportWriter.write(context, testRun)
+            } catch (e: Exception) {
+                Log.w(TAG, "QA report write failed: ${e.message}")
+                "save_failed"
+            }
+            emitEvent("agentReport", mapOf(
+                "overallPassed" to overallPassed,
+                "passedSteps" to passedCount,
+                "failedSteps" to (testSteps.size - passedCount),
+                "totalSteps" to testSteps.size,
+                "savedPath" to savedPath,
+                "goal" to cleanGoal
+            ))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to emit QA report", e)
         }
     }
 
