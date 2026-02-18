@@ -23,7 +23,7 @@ class NativeLlmClient(private val context: Context) {
         private const val TAG = "NativeLlmClient"
         private const val TIMEOUT_SECONDS = 30L
         private const val OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-        private const val GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
+        private const val GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
     }
 
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
@@ -43,10 +43,11 @@ class NativeLlmClient(private val context: Context) {
         screenSnapshot: String,
         step: Int,
         maxSteps: Int,
-        screenshot: android.graphics.Bitmap? = null
+        screenshot: android.graphics.Bitmap? = null,
+        isQaMode: Boolean = false
     ): AgentAction {
         try {
-            val prompt = buildPrompt(goal, screenSnapshot, step, maxSteps)
+            val prompt = buildPrompt(goal, screenSnapshot, step, maxSteps, isQaMode)
 
             // Try OpenAI first
             if (!openaiApiKey.isNullOrBlank()) {
@@ -100,8 +101,8 @@ class NativeLlmClient(private val context: Context) {
         }
     }
 
-    private fun buildPrompt(goal: String, screenSnapshot: String, step: Int, maxSteps: Int): String {
-        return """
+    private fun buildPrompt(goal: String, screenSnapshot: String, step: Int, maxSteps: Int, isQaMode: Boolean = false): String {
+        return ("""
 You are an AI agent controlling an Android device to complete user goals.
 
 GOAL: $goal
@@ -230,7 +231,18 @@ YouTube Mini-Player / Now Playing:
 - If you see a full-screen video player with a seek bar, the task is complete.
 
 Respond now with ONLY the JSON action:
-""".trimIndent()
+""" + if (isQaMode) """
+
+QA TESTER MODE — You are acting as an Android QA engineer:
+1. For each action, evaluate: did the expected UI element/response appear?
+2. Prefix your reasoning with [PASS] if the step behaved correctly, or [FAIL] if:
+   - Expected element not found
+   - Error message appeared
+   - Screen is blank/stuck
+   - Loading spinner did not resolve
+3. At the end of the test, use complete_task with reasoning summarising findings.
+4. You are testing, so be more thorough — check for empty states, errors, and edge cases.
+""" else "").trimIndent()
     }
 
     private fun callOpenAI(prompt: String): String {
@@ -306,7 +318,8 @@ Respond now with ONLY the JSON action:
         val stream = java.io.ByteArrayOutputStream()
         scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, stream)
         val base64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
-        scaled.recycle()
+        // Only recycle when createScaledBitmap returned a new instance; never recycle the caller's bitmap
+        if (scaled !== bitmap) scaled.recycle()
 
         val requestBody = JsonObject().apply {
             add("contents", gson.toJsonTree(listOf(mapOf("parts" to listOf(

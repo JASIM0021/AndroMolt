@@ -379,19 +379,31 @@ object AccessibilityController {
                 service.mainExecutor,
                 object : android.accessibilityservice.AccessibilityService.TakeScreenshotCallback {
                     override fun onSuccess(result: android.accessibilityservice.AccessibilityService.ScreenshotResult) {
+                        var hwBitmap: android.graphics.Bitmap? = null
+                        var hwBuffer: android.hardware.HardwareBuffer? = null
                         try {
                             // Use reflection: ScreenshotResult API surface differs across SDK stubs
-                            val hwBuffer = result.javaClass.getMethod("getHardwareBitmap").invoke(result)
+                            hwBuffer = result.javaClass.getMethod("getHardwareBuffer").invoke(result)
                                     as android.hardware.HardwareBuffer
-                            bitmap = android.graphics.Bitmap.wrapHardwareBuffer(hwBuffer, null)
-                                ?.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
-                            runCatching { result.javaClass.getMethod("close").invoke(result) }
+                            val colorSpace = runCatching {
+                                result.javaClass.getMethod("getColorSpace").invoke(result)
+                                    as? android.graphics.ColorSpace
+                            }.getOrNull()
+                            hwBitmap = android.graphics.Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+                            bitmap = hwBitmap?.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
                         } catch (e: Exception) {
                             android.util.Log.w("AccessibilityController", "Screenshot extract failed: ${e.message}")
+                        } finally {
+                            hwBitmap?.recycle()
+                            runCatching { hwBuffer?.close() }
+                            runCatching { result.javaClass.getMethod("close").invoke(result) }
                         }
                         latch.countDown()
                     }
-                    override fun onFailure(errorCode: Int) { latch.countDown() }
+                    override fun onFailure(errorCode: Int) {
+                        android.util.Log.e("AccessibilityController", "takeScreenshot failed with errorCode=$errorCode")
+                        latch.countDown()
+                    }
                 }
             )
             latch.await(3, java.util.concurrent.TimeUnit.SECONDS)

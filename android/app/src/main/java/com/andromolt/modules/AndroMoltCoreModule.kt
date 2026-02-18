@@ -15,6 +15,7 @@ import com.anonymous.androMolt.agent.NativeLlmClient
 import com.anonymous.androMolt.service.AndroMoltForegroundService
 import com.anonymous.androMolt.utils.EventBridge
 import com.facebook.react.bridge.*
+import com.google.gson.Gson
 import org.json.JSONObject
 
 class AndroMoltCoreModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
@@ -431,6 +432,25 @@ class AndroMoltCoreModule(reactContext: ReactApplicationContext) : ReactContextB
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("ERR_BACKGROUND", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getInstalledApps(promise: Promise) {
+        try {
+            val pm = reactApplicationContext.packageManager
+            val intent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+                addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+            }
+            val apps = pm.queryIntentActivities(intent, 0)
+                .sortedBy { it.loadLabel(pm).toString().lowercase() }
+                .map { info -> mapOf(
+                    "name" to info.loadLabel(pm).toString(),
+                    "packageName" to info.activityInfo.packageName
+                )}
+            promise.resolve(Gson().toJson(apps))
+        } catch (e: Exception) {
+            promise.reject("ERR_INSTALLED_APPS", e.message)
         }
     }
 
