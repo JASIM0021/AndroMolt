@@ -31,6 +31,8 @@ class NativeAgentLoop(
 
     companion object {
         private const val TAG = "NativeAgentLoop"
+        private const val ABSOLUTE_MAX_STEPS = 150   // Hard ceiling
+        private const val AVG_STEPS_PER_ITEM  = 3    // Budget extension estimate
         @Volatile var activeLoop: NativeAgentLoop? = null
     }
 
@@ -80,6 +82,11 @@ class NativeAgentLoop(
             Regex("(?i)\\b(test|check|verify|qa|assert|validate)\\b").containsMatchIn(cleanGoal)
         val testSteps = mutableListOf<TestStep>()
 
+        // Dynamic step budget
+        val targetCount = extractTargetCount(cleanGoal)
+        var completedCount = 0
+        var dynamicMaxSteps = config.maxSteps
+
         var step = 0
         val screenHashes = mutableListOf<String>()
         var consecutiveFailures = 0
@@ -93,9 +100,9 @@ class NativeAgentLoop(
             preLaunchAppFresh(pkg)
         }
 
-        while (running && step < config.maxSteps) {
+        while (running && step < dynamicMaxSteps) {
             step++
-            Log.d(TAG, "=== Step $step/${config.maxSteps} ===")
+            Log.d(TAG, "=== Step $step/$dynamicMaxSteps ===")
 
             // 1. OBSERVE
             val snapshot = AccessibilityController.getUiSnapshot()
@@ -108,9 +115,12 @@ class NativeAgentLoop(
 
             val compactSnapshot = UiTreeBuilder.toCompactString(snapshot)
             emitEvent("agentStep", mapOf(
-                "step" to step,
-                "package" to snapshot.packageName,
-                "elementCount" to snapshot.nodes.size
+                "step"           to step,
+                "maxSteps"       to dynamicMaxSteps,
+                "package"        to snapshot.packageName,
+                "elementCount"   to snapshot.nodes.size,
+                "completedItems" to completedCount,
+                "targetItems"    to targetCount
             ))
 
             // 2. STUCK DETECTION
@@ -171,8 +181,14 @@ class NativeAgentLoop(
             // 4. PLAN - Get next action from LLM or fallback
             Log.d(TAG, "Getting next action from planner")
             val screenshot = AccessibilityController.takeScreenshot()
-            val action = llmClient.getNextAction(cleanGoal, compactSnapshot, step, config.maxSteps, screenshot, isQaMode)
-            screenshot?.recycle()
+            val action = try {
+                llmClient.getNextAction(
+                    cleanGoal, compactSnapshot, step, dynamicMaxSteps,
+                    screenshot, isQaMode, completedCount, targetCount
+                )
+            } finally {
+                screenshot?.recycle()
+            }
 
             emitEvent("agentAction", mapOf(
                 "action" to action.action,
@@ -180,6 +196,14 @@ class NativeAgentLoop(
                 "reasoning" to action.reasoning
             ))
             Log.i(TAG, "Action: ${action.action}, Reasoning: ${action.reasoning}")
+
+            // Parse PROGRESS: N/M from LLM reasoning
+            extractProgressCount(action.reasoning)?.let { n ->
+                if (n > completedCount) {
+                    completedCount = n
+                    Log.i(TAG, "Progress updated: $completedCount/$targetCount")
+                }
+            }
 
             // 5. DONE CHECK
             if (action.action == "complete_task") {
@@ -245,11 +269,28 @@ class NativeAgentLoop(
 
             // 7. SETTLE - Wait for UI to update
             Thread.sleep(config.actionDelayMs)
+
+            // Dynamic extension: near limit but task not done
+            if (targetCount > 0
+                && completedCount < targetCount
+                && step >= dynamicMaxSteps - 2
+                && dynamicMaxSteps < ABSOLUTE_MAX_STEPS) {
+
+                val itemsLeft = targetCount - completedCount
+                val stepsNeeded = minOf(itemsLeft * AVG_STEPS_PER_ITEM, ABSOLUTE_MAX_STEPS - dynamicMaxSteps)
+                dynamicMaxSteps += stepsNeeded
+                Log.i(TAG, "Extending step budget by $stepsNeeded → new max: $dynamicMaxSteps")
+                emitEvent("agentExtend", mapOf(
+                    "completedItems" to completedCount,
+                    "targetItems"    to targetCount,
+                    "newMaxSteps"    to dynamicMaxSteps
+                ))
+            }
         }
 
         // Max steps reached
-        val finalMessage = if (step >= config.maxSteps) {
-            "Max steps (${config.maxSteps}) reached"
+        val finalMessage = if (step >= dynamicMaxSteps) {
+            "Max steps ($dynamicMaxSteps) reached — completed $completedCount/$targetCount"
         } else {
             "Agent stopped"
         }
@@ -442,6 +483,34 @@ class NativeAgentLoop(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to emit event $eventName", e)
         }
+    }
+
+    /**
+     * Extract a numeric item target from the user's goal.
+     * Matches: "apply to 30 jobs", "send 5 messages", "connect with 10 people", etc.
+     */
+    private fun extractTargetCount(goal: String): Int {
+        // Pattern 1: "<number> <noun>" e.g. "30 jobs", "10 applications"
+        val nounPattern = Regex(
+            """(\d+)\s+(?:job|application|message|email|post|connection|request|item|task|form|listing|profile|people|person)s?\b""",
+            RegexOption.IGNORE_CASE
+        )
+        // Pattern 2: "apply to <number>", "submit <number>", "send <number>"
+        val verbPattern = Regex(
+            """(?:apply\s+(?:to\s+)?|submit\s+|send\s+|fill\s+(?:out\s+)?)(\d+)""",
+            RegexOption.IGNORE_CASE
+        )
+        return (nounPattern.find(goal) ?: verbPattern.find(goal))
+            ?.groupValues?.get(1)?.toIntOrNull() ?: 0
+    }
+
+    /**
+     * Parse "PROGRESS: N/M" from LLM reasoning string.
+     * Returns the completed count N, or null if pattern not found.
+     */
+    private fun extractProgressCount(reasoning: String): Int? {
+        return Regex("""PROGRESS:\s*(\d+)/\d+""", RegexOption.IGNORE_CASE)
+            .find(reasoning)?.groupValues?.get(1)?.toIntOrNull()
     }
 
     private fun detectTargetPackage(goal: String): String? {
