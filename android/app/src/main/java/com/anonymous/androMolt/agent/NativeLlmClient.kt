@@ -44,10 +44,12 @@ class NativeLlmClient(private val context: Context) {
         step: Int,
         maxSteps: Int,
         screenshot: android.graphics.Bitmap? = null,
-        isQaMode: Boolean = false
+        isQaMode: Boolean = false,
+        completedCount: Int = 0,
+        targetCount: Int = 0
     ): AgentAction {
         try {
-            val prompt = buildPrompt(goal, screenSnapshot, step, maxSteps, isQaMode)
+            val prompt = buildPrompt(goal, screenSnapshot, step, maxSteps, isQaMode, completedCount, targetCount)
 
             // Try OpenAI first
             if (!openaiApiKey.isNullOrBlank()) {
@@ -101,11 +103,16 @@ class NativeLlmClient(private val context: Context) {
         }
     }
 
-    private fun buildPrompt(goal: String, screenSnapshot: String, step: Int, maxSteps: Int, isQaMode: Boolean = false): String {
+    private fun buildPrompt(goal: String, screenSnapshot: String, step: Int, maxSteps: Int, isQaMode: Boolean = false, completedCount: Int = 0, targetCount: Int = 0): String {
+        val progressBlock = if (targetCount > 0)
+            "\n\nTASK PROGRESS: $completedCount/$targetCount items completed. ${maxSteps - step} steps remaining.\n" +
+            "After each successfully completed item, include \"PROGRESS: ${completedCount + 1}/$targetCount\" in your reasoning.\n" +
+            "Continue working toward the goal — do NOT use complete_task until all $targetCount items are done or you are certain no more are possible."
+        else ""
         return ("""
 You are an AI agent controlling an Android device to complete user goals.
 
-GOAL: $goal
+GOAL: $goal$progressBlock
 
 CURRENT SCREEN (step $step/$maxSteps):
 $screenSnapshot

@@ -44,7 +44,7 @@ export default function ChatInterface() {
   const [permissionsGranted, setPermissionsGranted] = useState(false);
   const [checkingPermissions, setCheckingPermissions] = useState(true);
   const [agentLogs, setAgentLogs] = useState<AgentEvent[]>([]);
-  const [agentProgress, setAgentProgress] = useState({ step: 0, maxSteps: 50, message: '' });
+  const [agentProgress, setAgentProgress] = useState({ step: 0, maxSteps: 50, message: '', completedItems: 0, targetItems: 0 });
   const [isAgentRunning, setIsAgentRunning] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
   const [installedApps, setInstalledApps] = useState<{name: string, packageName: string}[]>([]);
@@ -75,11 +75,24 @@ export default function ChatInterface() {
       setAgentProgress(prev => ({
         ...prev,
         step: data.step,
-        message: `Package: ${data.package}`
+        maxSteps: data.maxSteps ?? prev.maxSteps,
+        message: data.targetItems > 0
+          ? `${data.completedItems}/${data.targetItems} done — ${data.package}`
+          : `Package: ${data.package}`,
+        completedItems: data.completedItems ?? 0,
+        targetItems: data.targetItems ?? 0,
       }));
       setAgentLogs(prev => [...prev, {
         type: 'info',
         message: `Step ${data.step}: ${data.package} (${data.elementCount} elements)`,
+        timestamp: new Date().toISOString()
+      }]);
+    };
+
+    const handleAgentExtend = (data: any) => {
+      setAgentLogs(prev => [...prev, {
+        type: 'info',
+        message: `📈 Budget extended: ${data.completedItems}/${data.targetItems} done → now ${data.newMaxSteps} max steps`,
         timestamp: new Date().toISOString()
       }]);
     };
@@ -145,6 +158,7 @@ export default function ChatInterface() {
     const agentThinkListener = DeviceEventEmitter.addListener('agentThink', handleNativeAgentThink);
     const agentCompleteListener = DeviceEventEmitter.addListener('agentComplete', handleNativeAgentComplete);
     const agentReportListener = DeviceEventEmitter.addListener('agentReport', handleAgentReport);
+    const agentExtendListener = DeviceEventEmitter.addListener('agentExtend', handleAgentExtend);
 
     return () => {
       agentStartListener.remove();
@@ -154,6 +168,7 @@ export default function ChatInterface() {
       agentThinkListener.remove();
       agentCompleteListener.remove();
       agentReportListener.remove();
+      agentExtendListener.remove();
     };
   }, []);
 
@@ -399,7 +414,9 @@ Let the agent work...`,
               </View>
               <View style={styles.agentHeaderRight}>
                 <Text style={styles.agentProgressStep}>
-                  Step {agentProgress.step}
+                  {agentProgress.targetItems > 0
+                    ? `${agentProgress.completedItems}/${agentProgress.targetItems} · Step ${agentProgress.step}`
+                    : `Step ${agentProgress.step}`}
                 </Text>
                 <TouchableOpacity style={styles.cancelButton} onPress={handleCancelAgent}>
                   <Text style={styles.cancelButtonText}>✕ Cancel</Text>
