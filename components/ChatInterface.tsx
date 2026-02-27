@@ -268,6 +268,11 @@ export default function ChatInterface() {
   const handleSendMessage = async () => {
     if (!inputText.trim() || isLoading) return;
 
+    // Stop active voice recognition to prevent appending text after clear
+    if (isListening) {
+      stopListening();
+    }
+
     const userMessage = inputText.trim();
     setInputText('');
     setIsLoading(true);
@@ -587,7 +592,7 @@ Let the agent work...`,
                   styles.voiceButton,
                   isListening && styles.voiceButtonActive,
                 ]}
-                onPress={isListening ? stopListening : startListening}
+                onPress={() => isListening ? stopListening() : startListening()}
                 disabled={isLoading}
                 activeOpacity={0.7}
               >

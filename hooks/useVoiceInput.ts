@@ -1,14 +1,14 @@
-import { useState, useCallback, useRef } from 'react';
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface UseVoiceInputReturn {
   isListening: boolean;
   transcript: string;
   error: string | null;
-  startListening: () => Promise<void>;
+  startListening: (lang?: string) => Promise<void>;
   stopListening: () => void;
 }
 
@@ -20,6 +20,11 @@ export function useVoiceInput(
   const [error, setError] = useState<string | null>(null);
   const accumulatedRef = useRef('');
 
+  const onTranscriptRef = useRef(onTranscript);
+  useEffect(() => {
+    onTranscriptRef.current = onTranscript;
+  }, [onTranscript]);
+
   // Handle speech recognition results
   useSpeechRecognitionEvent('result', (event) => {
     const text = event.results[0]?.transcript ?? '';
@@ -29,14 +34,14 @@ export function useVoiceInput(
         ? `${accumulatedRef.current} ${text}`
         : text;
       setTranscript(accumulatedRef.current);
-      onTranscript?.(accumulatedRef.current);
+      onTranscriptRef.current?.(accumulatedRef.current);
     } else {
       // Show interim results (accumulated + current partial)
       const display = accumulatedRef.current
         ? `${accumulatedRef.current} ${text}`
         : text;
       setTranscript(display);
-      onTranscript?.(display);
+      onTranscriptRef.current?.(display);
     }
   });
 
@@ -47,7 +52,7 @@ export function useVoiceInput(
       setIsListening(false);
       return;
     }
-    setError(event.message);
+    setError(event.message || event.error || 'Unknown speech recognition error');
     setIsListening(false);
   });
 
@@ -62,7 +67,7 @@ export function useVoiceInput(
     setError(null);
   });
 
-  const startListening = useCallback(async () => {
+  const startListening = useCallback(async (lang: string = 'en-US') => {
     try {
       setError(null);
 
@@ -80,7 +85,7 @@ export function useVoiceInput(
 
       // Start speech recognition
       ExpoSpeechRecognitionModule.start({
-        lang: 'en-US',
+        lang,
         interimResults: true,
         continuous: false,
         addsPunctuation: true,
