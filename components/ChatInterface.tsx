@@ -200,7 +200,10 @@ export default function ChatInterface() {
     if (AndroMoltCore) {
       AndroMoltCore.getInstalledApps()
         .then((json: string) => setInstalledApps(JSON.parse(json)))
-        .catch(() => { });
+        .catch((error: any) => {
+          console.error('Failed to load installed apps:', error);
+          setInstalledApps([]);
+        });
     }
   }, []);
 
