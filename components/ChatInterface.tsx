@@ -1,24 +1,25 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Ionicons } from '@expo/vector-icons';
+import { StatusBar } from 'expo-status-bar';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  View,
+  ActivityIndicator,
+  Animated,
+  BackHandler,
+  DeviceEventEmitter,
+  FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  NativeModules,
+  Platform,
+  ScrollView,
+  StyleSheet,
   Text,
   TextInput,
-  ScrollView,
   TouchableOpacity,
-  ActivityIndicator,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  BackHandler,
-  AppState,
-  NativeModules,
-  NativeEventEmitter,
-  DeviceEventEmitter,
-  Modal,
-  FlatList,
+  View
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
+import { useVoiceInput } from '../hooks/useVoiceInput';
 import type { AgentEvent } from '../lib/automation/AgentEvents';
 import { useAutomationStore } from '../lib/stores/automationStore';
 import OnboardingScreen from './OnboardingScreen';
@@ -47,9 +48,31 @@ export default function ChatInterface() {
   const [agentProgress, setAgentProgress] = useState({ step: 0, maxSteps: 50, message: '', completedItems: 0, targetItems: 0 });
   const [isAgentRunning, setIsAgentRunning] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
-  const [installedApps, setInstalledApps] = useState<{name: string, packageName: string}[]>([]);
-  const [selectedApp, setSelectedApp] = useState<{name: string, packageName: string} | null>(null);
+  const [installedApps, setInstalledApps] = useState<{ name: string, packageName: string }[]>([]);
+  const [selectedApp, setSelectedApp] = useState<{ name: string, packageName: string } | null>(null);
   const [showAppPicker, setShowAppPicker] = useState(false);
+
+  // Voice input
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const { isListening, startListening, stopListening, error: voiceError } = useVoiceInput(
+    (text) => setInputText(text),
+  );
+
+  // Pulse animation for voice button when listening
+  useEffect(() => {
+    if (isListening) {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.25, duration: 600, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
+        ]),
+      );
+      pulse.start();
+      return () => pulse.stop();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [isListening, pulseAnim]);
 
   const {
     chatMessages,
@@ -177,7 +200,7 @@ export default function ChatInterface() {
     if (AndroMoltCore) {
       AndroMoltCore.getInstalledApps()
         .then((json: string) => setInstalledApps(JSON.parse(json)))
-        .catch(() => {});
+        .catch(() => { });
     }
   }, []);
 
@@ -533,18 +556,45 @@ Let the agent work...`,
 
         {/* Input Area */}
         <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          {/* Listening Indicator */}
+          {isListening && (
+            <View style={styles.listeningBanner}>
+              <View style={styles.listeningDot} />
+              <Text style={styles.listeningText}>Listening…</Text>
+            </View>
+          )}
+          {voiceError && (
+            <Text style={styles.voiceErrorText}>{voiceError}</Text>
+          )}
           <View style={styles.inputRow}>
             <TextInput
               style={[styles.textInput, isLoading && styles.textInputDisabled]}
               value={inputText}
               onChangeText={setInputText}
-              placeholder="Tell me what to do…"
+              placeholder={isListening ? 'Speak now…' : 'Tell me what to do…'}
               placeholderTextColor="#aaa"
               multiline
               maxLength={500}
               editable={!isLoading}
               textAlignVertical="center"
             />
+            <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+              <TouchableOpacity
+                style={[
+                  styles.voiceButton,
+                  isListening && styles.voiceButtonActive,
+                ]}
+                onPress={isListening ? stopListening : startListening}
+                disabled={isLoading}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={isListening ? 'radio' : 'mic-outline'}
+                  size={22}
+                  color={isListening ? '#fff' : '#007AFF'}
+                />
+              </TouchableOpacity>
+            </Animated.View>
             <TouchableOpacity
               style={[
                 styles.sendButton,
@@ -883,6 +933,52 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     lineHeight: 24,
+  },
+
+  // ── Voice Input ────────────────────────────────────────────
+  voiceButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#e8f4fd',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#007AFF',
+  },
+  voiceButtonActive: {
+    backgroundColor: '#dc2626',
+    borderColor: '#dc2626',
+    elevation: 4,
+    shadowColor: '#dc2626',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+  },
+  listeningBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    gap: 6,
+  },
+  listeningDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#dc2626',
+  },
+  listeningText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#dc2626',
+    letterSpacing: 0.3,
+  },
+  voiceErrorText: {
+    fontSize: 11,
+    color: '#dc2626',
+    textAlign: 'center',
+    paddingBottom: 4,
   },
 
   // ── Agent Progress ────────────────────────────────────────
