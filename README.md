@@ -287,7 +287,14 @@ The app needs **Accessibility Service** permission to control other apps:
 
 ### 📲 Install App from Play Store
 
-https://github.com/user-attachments/assets/examples/install_app_from_playstore.mp4
+
+
+https://github.com/user-attachments/assets/2cdb3b5f-5ef9-447d-a95e-023bab8a7048
+
+
+
+
+
 
 > *Say: "Install Spotify from the Play Store" — and watch it happen.*
 
@@ -296,7 +303,10 @@ https://github.com/user-attachments/assets/examples/install_app_from_playstore.m
 
 ### 🎵 Play Songs on YouTube
 
-https://github.com/user-attachments/assets/examples/play_yt_songs.mp4
+
+
+https://github.com/user-attachments/assets/c0a6da85-f3ec-40a5-bf3b-f0552555cf1b
+
 
 > *Say: "Open YouTube and play a Hindi song" — done in seconds.*
 
