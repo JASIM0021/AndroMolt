@@ -7,6 +7,7 @@ import {
   BackHandler,
   DeviceEventEmitter,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Modal,
   NativeModules,
@@ -22,13 +23,13 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import type { AgentEvent } from '../lib/automation/AgentEvents';
 import { useAutomationStore } from '../lib/stores/automationStore';
+import ApiKeySetupScreen from './ApiKeySetupScreen';
 import OnboardingScreen from './OnboardingScreen';
+import SettingsScreen from './SettingsScreen';
 
 const { AndroMoltCore, AndroMoltPermission } = NativeModules;
 
-// API keys from environment
-const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY || '';
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || '';
+// API keys are loaded from AsyncStorage via the store
 
 interface ChatMessage {
   id: string;
@@ -48,9 +49,10 @@ export default function ChatInterface() {
   const [agentProgress, setAgentProgress] = useState({ step: 0, maxSteps: 50, message: '', completedItems: 0, targetItems: 0 });
   const [isAgentRunning, setIsAgentRunning] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
-  const [installedApps, setInstalledApps] = useState<{ name: string, packageName: string }[]>([]);
-  const [selectedApp, setSelectedApp] = useState<{ name: string, packageName: string } | null>(null);
+  const [installedApps, setInstalledApps] = useState<{ name: string, packageName: string, icon: string }[]>([]);
+  const [selectedApp, setSelectedApp] = useState<{ name: string, packageName: string, icon: string } | null>(null);
   const [showAppPicker, setShowAppPicker] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   // Voice input
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -80,6 +82,10 @@ export default function ChatInterface() {
     addToHistory,
     isExecuting,
     setIsExecuting,
+    settings,
+    settingsLoaded,
+    loadPersistedSettings,
+    permissions,
   } = useAutomationStore();
 
   // Subscribe to native agent events
@@ -195,11 +201,11 @@ export default function ChatInterface() {
     };
   }, []);
 
-  // Load installed apps on mount for app picker
+  // Load installed apps with icons on mount
   useEffect(() => {
     if (AndroMoltCore) {
-      AndroMoltCore.getInstalledApps()
-        .then((json: string) => setInstalledApps(JSON.parse(json)))
+      AndroMoltCore.getInstalledAppsWithIcons()
+        .then((apps: any[]) => setInstalledApps(apps))
         .catch((error: any) => {
           console.error('Failed to load installed apps:', error);
           setInstalledApps([]);
@@ -211,6 +217,11 @@ export default function ChatInterface() {
   useEffect(() => {
     scrollViewRef.current?.scrollToEnd({ animated: true });
   }, [chatMessages]);
+
+  // Load persisted settings on mount
+  useEffect(() => {
+    loadPersistedSettings();
+  }, []);
 
   // Check permissions on mount and periodically
   useEffect(() => {
@@ -250,12 +261,19 @@ export default function ChatInterface() {
     }
   }, [permissionsGranted]);
 
-  // Show loading while checking permissions
-  if (checkingPermissions) {
+  // Show loading while checking permissions OR loading settings
+  if (checkingPermissions || !settingsLoaded) {
     return (
       <View style={styles.initialLoadingContainer}>
-        <ActivityIndicator size="large" color="#007AFF" />
-        <Text style={styles.loadingText}>Checking permissions...</Text>
+        <View style={styles.splashLogoWrapper}>
+          <Image
+            source={require('../assets/images/icon.png')}
+            style={styles.splashLogoImage}
+            resizeMode="cover"
+          />
+        </View>
+        <ActivityIndicator size="large" color="#4338CA" style={{ marginTop: 28 }} />
+        <Text style={styles.splashSubtitle}>Starting AndroMolt…</Text>
       </View>
     );
   }
@@ -263,6 +281,11 @@ export default function ChatInterface() {
   // Show onboarding until permissions are granted
   if (!permissionsGranted) {
     return <OnboardingScreen />;
+  }
+
+  // Show API key setup if not completed yet
+  if (!settings.onboardingComplete) {
+    return <ApiKeySetupScreen onComplete={() => { }} />;
   }
 
   const handleSendMessage = async () => {
@@ -311,8 +334,10 @@ Let the agent work...`,
         : userMessage;
       const result = await AndroMoltCore.runNativeAgent(
         fullGoal,
-        OPENAI_API_KEY || null,
-        GEMINI_API_KEY || null
+        settings.openaiApiKey || null,
+        settings.geminiApiKey || null,
+        settings.openaiModel || 'gpt-4o-mini',
+        settings.geminiModel || 'gemini-2.0-flash-exp'
       );
 
       const responseMessage = result.success
@@ -362,57 +387,74 @@ Let the agent work...`,
     }
   };
 
+  const formatTime = (iso: string) => {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch { return ''; }
+  };
+
   const renderMessage = (message: ChatMessage) => {
     const isUser = message.type === 'user';
     const isSystem = message.type === 'system';
     const isReport = message.type === 'report';
+    const isAssistant = message.type === 'assistant';
 
     return (
       <View key={message.id} style={[styles.messageContainer, isUser && styles.userMessage]}>
         {!isUser && !isSystem && !isReport && (
           <View style={styles.avatarContainer}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>A</Text>
-            </View>
+            <Image
+              source={require('../assets/images/icon.png')}
+              style={styles.agentAvatarImage}
+              resizeMode="cover"
+            />
           </View>
         )}
 
-        <View style={[
-          styles.messageBubble,
-          isUser && styles.userBubble,
-          isSystem && styles.systemBubble,
-          isReport && styles.reportBubble,
-        ]}>
-          <Text style={[
-            styles.messageText,
-            isUser && styles.userText,
-            isSystem && styles.systemText,
-            isReport && styles.reportText,
+        <View style={styles.bubbleWrapper}>
+          <View style={[
+            styles.messageBubble,
+            isUser && styles.userBubble,
+            isSystem && styles.systemBubble,
+            isReport && styles.reportBubble,
+            isAssistant && styles.assistantBubble,
           ]}>
-            {message.content}
-          </Text>
+            <Text style={[
+              styles.messageText,
+              isUser && styles.userText,
+              isSystem && styles.systemText,
+              isReport && styles.reportText,
+              isAssistant && styles.assistantText,
+            ]}>
+              {message.content}
+            </Text>
 
-          {message.results && (
-            <View style={styles.resultsContainer}>
-              <Text style={styles.resultsTitle}>Action Results:</Text>
-              {message.results.map((result: any, index: number) => (
-                <View key={index} style={styles.resultItem}>
-                  <Text style={[
-                    styles.resultText,
-                    result.success ? styles.successText : styles.errorText
-                  ]}>
-                    {result.success ? 'OK' : 'FAIL'} {result.message}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          )}
+            {message.results && (
+              <View style={styles.resultsContainer}>
+                <Text style={styles.resultsTitle}>Action Results:</Text>
+                {message.results.map((result: any, index: number) => (
+                  <View key={index} style={styles.resultItem}>
+                    <Text style={[
+                      styles.resultText,
+                      result.success ? styles.successText : styles.errorText
+                    ]}>
+                      {result.success ? '✓' : '✗'} {result.message}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+          <Text style={[styles.timestamp, isUser && styles.timestampRight]}>
+            {formatTime(message.timestamp)}
+          </Text>
         </View>
 
         {isUser && (
           <View style={styles.avatarContainer}>
             <View style={styles.userAvatar}>
-              <Text style={styles.avatarText}>U</Text>
+              <Ionicons name="person" size={15} color="#64748B" />
             </View>
           </View>
         )}
@@ -426,33 +468,87 @@ Let the agent work...`,
 
   const insets = useSafeAreaInsets();
 
+  const quickActions = [
+    { label: '▶ YouTube', action: 'Open YouTube and play a Hindi song' },
+    { label: '💬 WhatsApp', action: 'Launch WhatsApp' },
+    { label: '⚙ Settings', action: 'Open Settings' },
+    { label: '📸 Instagram', action: 'Open Instagram' },
+  ];
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      <StatusBar style="dark" backgroundColor="#ffffff" translucent={false} />
+      <StatusBar style="light" backgroundColor="#4338CA" translucent={false} />
 
       <KeyboardAvoidingView
         style={styles.container}
         behavior="padding"
         keyboardVerticalOffset={0}
       >
-        {/* Agent Progress Bar */}
+        {/* ── Premium Header ─────────────────────────────── */}
+        <View style={styles.header}>
+          <View style={styles.headerContent}>
+            <View style={styles.headerLogoRow}>
+              <Image
+                source={require('../assets/images/icon.png')}
+                style={styles.headerLogoImage}
+                resizeMode="cover"
+              />
+              <View>
+                <Text style={styles.headerTitle}>AndroMolt</Text>
+                <View style={styles.headerStatusRow}>
+                  <View style={[
+                    styles.statusDot,
+                    isAgentRunning ? styles.statusDotRunning : styles.statusDotReady
+                  ]} />
+                  <Text style={styles.headerSubtitle}>
+                    {isAgentRunning ? 'Agent running…' : 'Ready'}
+                  </Text>
+                </View>
+              </View>
+            </View>
+            {isExecuting ? (
+              <View style={styles.executingIndicator}>
+                <ActivityIndicator size="small" color="#4338CA" />
+                <Text style={styles.executingText}>Running…</Text>
+              </View>
+            ) : (
+              <View style={styles.headerActions}>
+                <TouchableOpacity
+                  style={styles.headerActionBtn}
+                  onPress={() => setShowAppPicker(true)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="apps-outline" size={20} color="#4338CA" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.headerActionBtn}
+                  onPress={() => setShowSettings(true)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="settings-outline" size={20} color="#4338CA" />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
+
+        {/* ── Agent Progress Panel ───────────────────────── */}
         {isAgentRunning && (
           <View style={styles.agentProgressContainer}>
             <View style={styles.agentProgressHeader}>
               <View style={styles.agentTitleRow}>
                 <View style={styles.agentDot} />
-                <Text style={styles.agentProgressTitle}>Agent Running</Text>
-              </View>
-              <View style={styles.agentHeaderRight}>
+                <Text style={styles.agentProgressTitle}>Agent Active</Text>
                 <Text style={styles.agentProgressStep}>
                   {agentProgress.targetItems > 0
-                    ? `${agentProgress.completedItems}/${agentProgress.targetItems} · Step ${agentProgress.step}`
-                    : `Step ${agentProgress.step}`}
+                    ? ` · ${agentProgress.completedItems}/${agentProgress.targetItems} · Step ${agentProgress.step}`
+                    : ` · Step ${agentProgress.step}`}
                 </Text>
-                <TouchableOpacity style={styles.cancelButton} onPress={handleCancelAgent}>
-                  <Text style={styles.cancelButtonText}>✕ Cancel</Text>
-                </TouchableOpacity>
               </View>
+              <TouchableOpacity style={styles.cancelButton} onPress={handleCancelAgent}>
+                <Ionicons name="stop-circle-outline" size={14} color="#FECACA" />
+                <Text style={styles.cancelButtonText}> Stop</Text>
+              </TouchableOpacity>
             </View>
             <View style={styles.progressBarContainer}>
               <View
@@ -462,11 +558,13 @@ Let the agent work...`,
                 ]}
               />
             </View>
-            <Text style={styles.agentProgressMessage} numberOfLines={1}>
-              {agentProgress.message}
-            </Text>
+            {agentProgress.message ? (
+              <Text style={styles.agentProgressMessage} numberOfLines={1}>
+                {agentProgress.message}
+              </Text>
+            ) : null}
             <ScrollView style={styles.logsContainer} nestedScrollEnabled>
-              {agentLogs.slice(-10).map((log, index) => (
+              {agentLogs.slice(-12).map((log, index) => (
                 <Text
                   key={index}
                   style={[
@@ -483,46 +581,19 @@ Let the agent work...`,
           </View>
         )}
 
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerContent}>
-            <View style={styles.headerLogoRow}>
-              <View style={styles.headerLogo}>
-                <Text style={styles.headerLogoText}>A</Text>
-              </View>
-              <View>
-                <Text style={styles.headerTitle}>AndroMolt</Text>
-                <Text style={styles.headerSubtitle}>AI Automation Assistant</Text>
-              </View>
-            </View>
-            {isExecuting && (
-              <View style={styles.executingIndicator}>
-                <ActivityIndicator size="small" color="#007AFF" />
-                <Text style={styles.executingText}>Running…</Text>
-              </View>
-            )}
-          </View>
-        </View>
-
-        {/* Quick Actions */}
+        {/* ── Quick Actions ──────────────────────────────── */}
         <View style={styles.quickActions}>
-          <Text style={styles.quickActionsTitle}>Quick Actions</Text>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.quickActionsRow}
           >
-            {[
-              { label: '▶ YouTube', action: 'Open YouTube and play a Hindi song' },
-              { label: '💬 WhatsApp', action: 'Launch WhatsApp' },
-              { label: '⚙ Settings', action: 'Open Settings' },
-              { label: '📸 Instagram', action: 'Open Instagram' },
-            ].map((item) => (
+            {quickActions.map((item) => (
               <TouchableOpacity
                 key={item.label}
                 style={styles.quickAction}
                 onPress={() => handleQuickAction(item.action)}
-                activeOpacity={0.75}
+                activeOpacity={0.7}
               >
                 <Text style={styles.quickActionText}>{item.label}</Text>
               </TouchableOpacity>
@@ -530,57 +601,85 @@ Let the agent work...`,
           </ScrollView>
         </View>
 
-        {/* Chat Messages */}
+        {/* ── Chat Messages ──────────────────────────────── */}
         <ScrollView
           ref={scrollViewRef}
           style={styles.messagesContainer}
-          contentContainerStyle={styles.messagesContent}
+          contentContainerStyle={[styles.messagesContent, chatMessages.length === 0 && styles.messagesContentEmpty]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {chatMessages.map(renderMessage)}
+          {chatMessages.length === 0 && !isLoading ? (
+            <View style={styles.emptyState}>
+              <View style={styles.emptyIconRing}>
+                <Ionicons name="chatbubbles-outline" size={40} color="#A5B4FC" />
+              </View>
+              <Text style={styles.emptyTitle}>How can I help?</Text>
+              <Text style={styles.emptySubtitle}>
+                Give me a goal and I'll automate it on your Android device.
+              </Text>
+            </View>
+          ) : (
+            chatMessages.map(renderMessage)
+          )}
           {isLoading && (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="small" color="#007AFF" />
-              <Text style={styles.loadingText}>Processing…</Text>
+            <View style={styles.typingContainer}>
+              <Image
+                source={require('../assets/images/icon.png')}
+                style={styles.agentAvatarImage}
+                resizeMode="cover"
+              />
+              <View style={styles.typingBubble}>
+                <View style={styles.typingDots}>
+                  <View style={[styles.typingDot, { opacity: 0.4 }]} />
+                  <View style={[styles.typingDot, { opacity: 0.7 }]} />
+                  <View style={styles.typingDot} />
+                </View>
+              </View>
             </View>
           )}
         </ScrollView>
 
-        {/* App Target Row */}
-        <View style={styles.appTargetRow}>
-          <TouchableOpacity onPress={() => setShowAppPicker(true)} style={styles.appTargetBtn}>
-            <Text style={styles.appTargetText}>
-              {selectedApp ? `📱 ${selectedApp.name}` : '📱 All apps'}
-            </Text>
-            <Text style={styles.appTargetChevron}>▾</Text>
-          </TouchableOpacity>
-          {selectedApp && (
-            <TouchableOpacity onPress={() => setSelectedApp(null)}>
-              <Text style={styles.appTargetClear}>✕</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Input Area */}
-        <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-          {/* Listening Indicator */}
+        {/* ── Bottom Toolbar ─────────────────────────────── */}
+        <View style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 14) }]}>
+          {/* Listening Banner */}
           {isListening && (
             <View style={styles.listeningBanner}>
               <View style={styles.listeningDot} />
               <Text style={styles.listeningText}>Listening…</Text>
             </View>
           )}
-          {voiceError && (
+          {voiceError ? (
             <Text style={styles.voiceErrorText}>{voiceError}</Text>
+          ) : null}
+
+          {/* Target App pill (compact, inside toolbar) */}
+          {selectedApp && (
+            <View style={styles.targetAppPill}>
+              <Ionicons name="phone-portrait-outline" size={13} color="#4338CA" />
+              <Text style={styles.targetAppPillText} numberOfLines={1}>{selectedApp.name}</Text>
+              <TouchableOpacity onPress={() => setSelectedApp(null)}>
+                <Ionicons name="close-circle" size={16} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
           )}
+
           <View style={styles.inputRow}>
+            {/* App Picker trigger */}
+            <TouchableOpacity
+              style={styles.appPickTrigger}
+              onPress={() => setShowAppPicker(true)}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="apps-outline" size={20} color="#64748B" />
+            </TouchableOpacity>
+
             <TextInput
               style={[styles.textInput, isLoading && styles.textInputDisabled]}
               value={inputText}
               onChangeText={setInputText}
               placeholder={isListening ? 'Speak now…' : 'Tell me what to do…'}
-              placeholderTextColor="#aaa"
+              placeholderTextColor="#94A3B8"
               multiline
               maxLength={500}
               editable={!isLoading}
@@ -597,9 +696,9 @@ Let the agent work...`,
                 activeOpacity={0.7}
               >
                 <Ionicons
-                  name={isListening ? 'radio' : 'mic-outline'}
-                  size={22}
-                  color={isListening ? '#fff' : '#007AFF'}
+                  name={isListening ? 'radio' : 'mic'}
+                  size={20}
+                  color={isListening ? '#fff' : '#4338CA'}
                 />
               </TouchableOpacity>
             </Animated.View>
@@ -615,65 +714,135 @@ Let the agent work...`,
               {isLoading ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <Text style={styles.sendButtonText}>↑</Text>
+                <Ionicons name="arrow-up" size={20} color="#fff" />
               )}
             </TouchableOpacity>
           </View>
-          {inputText.length > 400 && (
+          {inputText.length > 400 ? (
             <Text style={styles.charCount}>{inputText.length}/500</Text>
-          )}
+          ) : null}
         </View>
-        {/* App Picker Modal */}
+
+        {/* ── App Picker Modal ───────────────────────────── */}
         <Modal visible={showAppPicker} animationType="slide" transparent>
           <View style={styles.pickerOverlay}>
             <View style={styles.pickerSheet}>
-              <Text style={styles.pickerTitle}>Select Target App</Text>
+              <View style={styles.pickerHandle} />
+              <Text style={styles.pickerTitle}>Target App</Text>
+              <TouchableOpacity
+                style={styles.pickerAllApps}
+                onPress={() => { setSelectedApp(null); setShowAppPicker(false); }}
+              >
+                <Ionicons name="layers-outline" size={20} color="#4338CA" />
+                <Text style={styles.pickerAllAppsText}>All apps (auto-detect)</Text>
+                {!selectedApp && <Ionicons name="checkmark" size={18} color="#10B981" />}
+              </TouchableOpacity>
               <FlatList
                 data={installedApps}
                 keyExtractor={item => item.packageName}
-                renderItem={({ item }) => (
+                renderItem={({ item }) => {
+                    const colors = ['#4338CA','#0891B2','#059669','#D97706','#DC2626','#7C3AED'];
+                    const colorIdx = item.packageName.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0) % colors.length;
+                    const iconColor = colors[colorIdx];
+                    const initials = item.name.slice(0, 2).toUpperCase();
+                    const hasIcon = !!item.icon;
+                    return (
                   <TouchableOpacity
-                    style={styles.pickerItem}
+                    style={[styles.pickerItem, selectedApp?.packageName === item.packageName && styles.pickerItemSelected]}
                     onPress={() => { setSelectedApp(item); setShowAppPicker(false); }}
                   >
-                    <Text style={styles.pickerItemText}>{item.name}</Text>
-                    <Text style={styles.pickerItemPkg}>{item.packageName}</Text>
+                    {hasIcon ? (
+                      <Image
+                        source={{ uri: item.icon }}
+                        style={styles.appIconImage}
+                        resizeMode="contain"
+                      />
+                    ) : (
+                      <View style={[styles.appIcon, { backgroundColor: iconColor + '18', borderColor: iconColor + '40' }]}>
+                        <Text style={[styles.appIconText, { color: iconColor }]}>{initials}</Text>
+                      </View>
+                    )}
+                    <View style={styles.pickerItemLeft}>
+                      <Text style={styles.pickerItemText}>{item.name}</Text>
+                      <Text style={styles.pickerItemPkg}>{item.packageName}</Text>
+                    </View>
+                    {selectedApp?.packageName === item.packageName && (
+                      <Ionicons name="checkmark-circle" size={20} color="#10B981" />
+                    )}
                   </TouchableOpacity>
-                )}
+                    );
+                  }}
               />
-              <TouchableOpacity onPress={() => setShowAppPicker(false)}>
-                <Text style={styles.pickerCancel}>Cancel</Text>
+              <TouchableOpacity style={styles.pickerCancelBtn} onPress={() => setShowAppPicker(false)}>
+                <Text style={styles.pickerCancel}>Dismiss</Text>
               </TouchableOpacity>
             </View>
           </View>
         </Modal>
+
+        {/* ── Settings Modal ──────────────────────────────── */}
+        <SettingsScreen visible={showSettings} onClose={() => setShowSettings(false)} />
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  // ── Splash / Loading ─────────────────────────────────────────
+  splashLogo: {
+    // kept for compatibility, not used directly
+    width: 80, height: 80, borderRadius: 26, backgroundColor: '#4338CA',
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#4338CA', shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35, shadowRadius: 20, elevation: 10,
+  },
+  splashLogoWrapper: {
+    width: 100,
+    height: 100,
+    borderRadius: 30,
+    overflow: 'hidden',
+    shadowColor: '#4338CA',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  splashLogoImage: {
+    width: 100,
+    height: 100,
+  },
+  splashLogoText: {
+    color: '#fff', fontSize: 40, fontWeight: '900',
+  },
+  splashSubtitle: {
+    marginTop: 16,
+    fontSize: 15,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+
   safeArea: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#4338CA',
   },
   container: {
     flex: 1,
-    backgroundColor: '#f2f4f7',
+    backgroundColor: '#F8FAFC',
   },
 
   // ── Header ──────────────────────────────────────────────
   header: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#e8eaf0',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
+    borderBottomColor: '#F1F5F9',
+    elevation: 4,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.03,
+    shadowRadius: 12,
+    zIndex: 10,
   },
   headerContent: {
     flexDirection: 'row',
@@ -683,78 +852,128 @@ const styles = StyleSheet.create({
   headerLogoRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
   headerLogo: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: '#007AFF',
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#4338CA',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#4338CA',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  headerLogoImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    shadowColor: '#4338CA',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 3,
   },
   headerLogoText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '800',
   },
   headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1a1a2e',
-    letterSpacing: 0.3,
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#0F172A',
+    letterSpacing: 0.2,
   },
   headerSubtitle: {
-    fontSize: 12,
-    color: '#888',
-    marginTop: 1,
+    fontSize: 13,
+    color: '#64748B',
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  headerStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 3,
+  },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  statusDotReady: {
+    backgroundColor: '#10B981',
+  },
+  statusDotRunning: {
+    backgroundColor: '#F59E0B',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  headerActionBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#EEF2FF',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   executingIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#e8f4fd',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
+    backgroundColor: '#EEF2FF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
     gap: 6,
   },
   executingText: {
-    fontSize: 12,
-    color: '#007AFF',
-    fontWeight: '500',
+    fontSize: 13,
+    color: '#4338CA',
+    fontWeight: '600',
   },
 
   // ── Quick Actions ────────────────────────────────────────
   quickActions: {
-    backgroundColor: '#ffffff',
-    paddingTop: 10,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e8eaf0',
+    backgroundColor: 'transparent',
+    paddingTop: 12,
+    paddingBottom: 8,
   },
   quickActionsTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#888',
-    paddingHorizontal: 16,
-    marginBottom: 8,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#94A3B8',
+    paddingHorizontal: 20,
+    marginBottom: 10,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.8,
   },
   quickActionsRow: {
-    paddingHorizontal: 12,
-    gap: 8,
+    paddingHorizontal: 16,
+    gap: 10,
   },
   quickAction: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 18,
+    paddingVertical: 9,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
   },
   quickActionText: {
-    color: '#fff',
+    color: '#475569',
     fontSize: 13,
-    fontWeight: '500',
+    fontWeight: '600',
   },
 
   // ── Messages ─────────────────────────────────────────────
@@ -762,104 +981,237 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   messagesContent: {
-    padding: 16,
-    paddingBottom: 8,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 24,
   },
+  messagesContentEmpty: {
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
+
+  // ── Empty State ───────────────────────────────────────────
+  emptyState: {
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  emptyIconRing: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    backgroundColor: '#EEF2FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+  },
+  emptyTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 10,
+    letterSpacing: -0.3,
+  },
+  emptySubtitle: {
+    fontSize: 15,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 22,
+    fontWeight: '400',
+  },
+
+  // ── Typing Indicator ──────────────────────────────────────
+  typingContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    marginBottom: 12,
+  },
+  typingBubble: {
+    marginLeft: 8,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderBottomLeftRadius: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+  },
+  typingDots: {
+    flexDirection: 'row',
+    gap: 5,
+    alignItems: 'center',
+  },
+  typingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#94A3B8',
+  },
+
+  // ── Chat Bubble Wrapper + Timestamp ────────────────────────
+  bubbleWrapper: {
+    maxWidth: '75%',
+  },
+  timestamp: {
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 4,
+    marginLeft: 4,
+    fontWeight: '500',
+  },
+  timestampRight: {
+    textAlign: 'right',
+    marginRight: 4,
+    marginLeft: 0,
+  },
+
+  // ── Agent Avatar image ─────────────────────────────────────────
+  agentAvatarImage: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    shadowColor: '#4338CA',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+
   messageContainer: {
     flexDirection: 'row',
-    marginBottom: 14,
+    marginBottom: 18,
     alignItems: 'flex-end',
   },
   userMessage: {
     justifyContent: 'flex-end',
   },
   avatarContainer: {
-    marginHorizontal: 6,
+    marginHorizontal: 8,
+    marginBottom: 2,
   },
   avatar: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#007AFF',
+    width: 32,
+    height: 32,
+    borderRadius: 12,
+    backgroundColor: '#EEF2FF',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
   },
   userAvatar: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#34C759',
+    width: 32,
+    height: 32,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
   avatarText: {
-    fontSize: 13,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#4338CA',
+  },
+
+  // ── Assistant bubble ────────────────────────────────────────
+  assistantBubble: {
+    backgroundColor: '#F5F3FF',
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+    borderBottomLeftRadius: 4,
+    borderRadius: 18,
+  },
+  assistantText: {
+    color: '#1E1B4B',
+    fontWeight: '500',
   },
   messageBubble: {
     maxWidth: '75%',
-    backgroundColor: '#ffffff',
-    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
     borderBottomLeftRadius: 4,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.07,
-    shadowRadius: 3,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
     elevation: 1,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
   },
   userBubble: {
-    backgroundColor: '#007AFF',
-    borderBottomLeftRadius: 18,
+    backgroundColor: '#4338CA',
+    borderBottomLeftRadius: 20,
     borderBottomRightRadius: 4,
+    borderWidth: 0,
+    shadowColor: '#4338CA',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
   },
   systemBubble: {
-    backgroundColor: '#fffbea',
-    borderLeftWidth: 3,
-    borderLeftColor: '#f59e0b',
-    borderRadius: 12,
+    backgroundColor: '#FEF3C7',
+    borderLeftWidth: 4,
+    borderLeftColor: '#F59E0B',
+    borderRadius: 16,
     borderBottomLeftRadius: 4,
-    maxWidth: '90%',
+    maxWidth: '85%',
+    borderColor: '#FDE68A',
   },
   messageText: {
-    fontSize: 15,
-    color: '#1a1a2e',
-    lineHeight: 21,
+    fontSize: 16,
+    color: '#1E293B',
+    lineHeight: 24,
+    letterSpacing: 0.1,
   },
   userText: {
-    color: '#ffffff',
+    color: '#FFFFFF',
+    fontWeight: '500',
   },
   systemText: {
-    color: '#78350f',
-    fontSize: 13,
-    lineHeight: 19,
+    color: '#92400E',
+    fontSize: 14,
+    lineHeight: 22,
+    fontWeight: '500',
   },
   resultsContainer: {
-    marginTop: 8,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 8,
-    padding: 8,
+    marginTop: 10,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
   resultsTitle: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#64748b',
-    marginBottom: 4,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748B',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   resultItem: {
-    marginBottom: 2,
+    marginBottom: 4,
   },
   resultText: {
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
   },
   successText: {
-    color: '#16a34a',
+    color: '#059669',
   },
   errorText: {
-    color: '#dc2626',
+    color: '#DC2626',
   },
 
   // ── Loading ───────────────────────────────────────────────
@@ -867,80 +1219,115 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#f2f4f7',
+    backgroundColor: '#F8FAFC',
   },
   loadingContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 12,
-    gap: 10,
+    padding: 16,
+    gap: 12,
   },
   loadingText: {
-    fontSize: 14,
-    color: '#888',
+    fontSize: 15,
+    color: '#64748B',
+    fontWeight: '500',
   },
 
-  // ── Input ─────────────────────────────────────────────────
-  inputContainer: {
-    backgroundColor: '#ffffff',
-    borderTopWidth: 1,
-    borderTopColor: '#e8eaf0',
+  // ── Input Container ───────────────────────────────────────
+  targetAppPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EEF2FF',
+    borderRadius: 20,
     paddingHorizontal: 12,
-    paddingTop: 10,
+    paddingVertical: 6,
+    marginBottom: 8,
+    gap: 6,
+    alignSelf: 'flex-start',
+    maxWidth: '85%',
+  },
+  targetAppPillText: {
+    fontSize: 13,
+    color: '#4338CA',
+    fontWeight: '600',
+    flex: 1,
+  },
+  appPickTrigger: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+  },
+  inputContainer: {
+    backgroundColor: 'transparent',
+    paddingHorizontal: 16,
+    paddingTop: 8,
   },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 24,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
     gap: 8,
   },
   textInput: {
     flex: 1,
-    borderWidth: 1.5,
-    borderColor: '#d1d5db',
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 10,
-    fontSize: 15,
-    maxHeight: 110,
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 12,
+    fontSize: 16,
+    color: '#0F172A',
+    maxHeight: 120,
     minHeight: 44,
-    backgroundColor: '#f9fafb',
-    color: '#1a1a2e',
+    backgroundColor: 'transparent',
+    borderWidth: 0,
   },
   textInputDisabled: {
-    opacity: 0.6,
+    opacity: 0.5,
   },
   charCount: {
-    fontSize: 11,
-    color: '#f59e0b',
+    fontSize: 12,
+    color: '#94A3B8',
     textAlign: 'right',
-    marginTop: 4,
-    marginBottom: 2,
+    marginTop: 8,
+    marginRight: 16,
+    fontWeight: '500',
   },
   sendButton: {
     width: 44,
     height: 44,
-    backgroundColor: '#007AFF',
+    backgroundColor: '#4338CA',
     borderRadius: 22,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#007AFF',
-    shadowOffset: { width: 0, height: 2 },
+    shadowColor: '#4338CA',
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
-    shadowRadius: 4,
+    shadowRadius: 8,
+    elevation: 4,
   },
   sendButtonDisabled: {
-    backgroundColor: '#c7d2d8',
-    elevation: 0,
+    backgroundColor: '#CBD5E1',
     shadowOpacity: 0,
+    elevation: 0,
   },
   sendButtonText: {
-    color: '#fff',
-    fontSize: 20,
-    fontWeight: '700',
-    lineHeight: 24,
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '800',
+    lineHeight: 26,
   },
 
   // ── Voice Input ────────────────────────────────────────────
@@ -948,155 +1335,176 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#e8f4fd',
+    backgroundColor: '#EEF2FF',
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: '#007AFF',
   },
   voiceButtonActive: {
-    backgroundColor: '#dc2626',
-    borderColor: '#dc2626',
-    elevation: 4,
-    shadowColor: '#dc2626',
-    shadowOffset: { width: 0, height: 2 },
+    backgroundColor: '#EF4444',
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4,
-    shadowRadius: 6,
+    shadowRadius: 8,
+    elevation: 6,
   },
   listeningBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 6,
-    gap: 6,
+    paddingVertical: 8,
+    gap: 8,
+    marginBottom: 4,
   },
   listeningDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#dc2626',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#EF4444',
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 4,
+    elevation: 2,
   },
   listeningText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#dc2626',
-    letterSpacing: 0.3,
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#EF4444',
+    letterSpacing: 0.5,
   },
   voiceErrorText: {
-    fontSize: 11,
-    color: '#dc2626',
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#EF4444',
     textAlign: 'center',
-    paddingBottom: 4,
+    paddingBottom: 8,
   },
 
   // ── Agent Progress ────────────────────────────────────────
   agentProgressContainer: {
-    backgroundColor: '#0d1117',
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 10,
-    borderBottomWidth: 2,
-    borderBottomColor: '#007AFF',
+    backgroundColor: '#0F172A',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 16,
+    borderBottomWidth: 3,
+    borderBottomColor: '#4338CA',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
   agentProgressHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 12,
   },
   agentTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   agentDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#00d68f',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#10B981',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 6,
   },
   agentProgressTitle: {
-    color: '#00d68f',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.3,
+    color: '#10B981',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   agentHeaderRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
   agentProgressStep: {
-    color: '#6b7280',
-    fontSize: 12,
+    color: '#94A3B8',
+    fontSize: 13,
     fontWeight: '600',
   },
   progressBarContainer: {
-    height: 3,
-    backgroundColor: '#1f2937',
+    height: 4,
+    backgroundColor: '#334155',
     borderRadius: 2,
     overflow: 'hidden',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   progressBar: {
     height: '100%',
-    backgroundColor: '#00d68f',
+    backgroundColor: '#10B981',
     borderRadius: 2,
   },
   agentProgressMessage: {
-    color: '#9ca3af',
-    fontSize: 11,
-    marginBottom: 8,
+    color: '#CBD5E1',
+    fontSize: 13,
+    fontWeight: '500',
+    marginBottom: 10,
   },
   logsContainer: {
-    maxHeight: 90,
-    backgroundColor: '#080c12',
-    borderRadius: 6,
-    padding: 8,
+    maxHeight: 120,
+    backgroundColor: '#020617',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#1E293B',
   },
   logText: {
-    color: '#6b7280',
-    fontSize: 10,
+    color: '#94A3B8',
+    fontSize: 11,
     fontFamily: Platform.OS === 'android' ? 'monospace' : 'Courier',
-    marginBottom: 2,
-    lineHeight: 14,
+    marginBottom: 4,
+    lineHeight: 16,
   },
   logError: {
-    color: '#f87171',
+    color: '#F87171',
+    fontWeight: '600',
   },
   logSuccess: {
-    color: '#00d68f',
+    color: '#10B981',
+    fontWeight: '600',
   },
   logThinking: {
-    color: '#60a5fa',
+    color: '#60A5FA',
   },
   cancelButton: {
-    backgroundColor: '#7f1d1d',
+    backgroundColor: '#7F1D1D',
     borderWidth: 1,
-    borderColor: '#dc2626',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
+    borderColor: '#DC2626',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
   },
   cancelButtonText: {
-    color: '#fca5a5',
-    fontSize: 11,
-    fontWeight: '600',
+    color: '#FECACA',
+    fontSize: 12,
+    fontWeight: '700',
   },
 
   // ── Report Bubble ─────────────────────────────────────────
   reportBubble: {
-    backgroundColor: '#f0fdf4',
-    borderLeftWidth: 3,
-    borderLeftColor: '#16a34a',
-    borderRadius: 12,
+    backgroundColor: '#F0FDF4',
+    borderLeftWidth: 4,
+    borderLeftColor: '#059669',
+    borderRadius: 16,
     borderBottomLeftRadius: 4,
-    maxWidth: '92%',
+    maxWidth: '90%',
+    borderColor: '#D1FAE5',
+    borderWidth: 1,
   },
   reportText: {
-    color: '#14532d',
-    fontSize: 13,
-    lineHeight: 20,
+    color: '#064E3B',
+    fontSize: 14,
+    lineHeight: 22,
+    fontWeight: '600',
     fontFamily: Platform.OS === 'android' ? 'monospace' : 'Courier',
   },
 
@@ -1104,80 +1512,156 @@ const styles = StyleSheet.create({
   appTargetRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderTopWidth: 1,
-    borderTopColor: '#e8eaf0',
-    gap: 8,
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+    paddingVertical: 12,
+    gap: 10,
   },
   appTargetBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f0f4ff',
-    borderRadius: 14,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    gap: 4,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
+    gap: 8,
   },
   appTargetText: {
-    fontSize: 13,
-    color: '#007AFF',
-    fontWeight: '500',
+    fontSize: 14,
+    color: '#475569',
+    fontWeight: '600',
   },
   appTargetChevron: {
-    fontSize: 12,
-    color: '#007AFF',
+    fontSize: 14,
+    color: '#64748B',
+    fontWeight: '700',
   },
   appTargetClear: {
-    fontSize: 14,
-    color: '#888',
-    paddingHorizontal: 6,
+    fontSize: 18,
+    color: '#94A3B8',
+    paddingHorizontal: 8,
+    fontWeight: '600',
   },
 
   // ── App Picker Modal ──────────────────────────────────────
   pickerOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
     justifyContent: 'flex-end',
   },
   pickerSheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    paddingTop: 16,
-    paddingBottom: 32,
-    maxHeight: '75%',
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingTop: 24,
+    paddingBottom: 40,
+    maxHeight: '80%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 10,
   },
   pickerTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1a1a2e',
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0F172A',
     textAlign: 'center',
-    marginBottom: 12,
-    paddingHorizontal: 16,
+    marginBottom: 16,
+    paddingHorizontal: 20,
+    letterSpacing: 0.3,
   },
   pickerItem: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingHorizontal: 24,
+    paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#f1f5f9',
+    borderBottomColor: '#F1F5F9',
   },
   pickerItemText: {
-    fontSize: 15,
-    color: '#1a1a2e',
-    fontWeight: '500',
+    fontSize: 16,
+    color: '#1E293B',
+    fontWeight: '600',
   },
   pickerItemPkg: {
-    fontSize: 11,
-    color: '#888',
-    marginTop: 2,
+    fontSize: 13,
+    color: '#64748B',
+    marginTop: 4,
+    fontWeight: '500',
   },
   pickerCancel: {
     textAlign: 'center',
-    fontSize: 15,
-    color: '#dc2626',
+    fontSize: 17,
+    color: '#EF4444',
+    fontWeight: '700',
+    paddingVertical: 20,
+    marginTop: 8,
+  },
+  pickerHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  pickerAllApps: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    gap: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: '#F1F5F9',
+    marginBottom: 4,
+  },
+  pickerAllAppsText: {
+    fontSize: 16,
+    color: '#1E293B',
     fontWeight: '600',
-    paddingVertical: 16,
+    flex: 1,
+  },
+  pickerItemSelected: {
+    backgroundColor: '#F0FDF4',
+  },
+  pickerItemLeft: {
+    flex: 1,
+  },
+  pickerCancelBtn: {
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  logAction: {
+    color: '#A78BFA',
+    fontWeight: '600',
+  },
+
+  // ── App Icon in picker ──────────────────────────────────────
+  appIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 4,
+  },
+  appIconImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    marginRight: 4,
+    backgroundColor: '#F1F5F9',
+  },
+  appIconText: {
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.5,
   },
 });
