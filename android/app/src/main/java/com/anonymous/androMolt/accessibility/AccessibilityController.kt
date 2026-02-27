@@ -227,6 +227,243 @@ object AccessibilityController {
         return ActionOutcome(result, if (result) "Input text: '$text'" else "Failed to input text")
     }
 
+    /**
+     * Input text into a specific form field identified by its label or hint text.
+     * Strategy: find a node whose hint/text matches the label, focus it, then type.
+     * Falls back to inputText() if no matching field found.
+     */
+    fun inputTextIntoField(label: String, text: String): ActionOutcome {
+        val service = getService()
+            ?: return ActionOutcome(false, "AccessibilityService not running")
+        val root = service.rootInActiveWindow
+            ?: return ActionOutcome(false, "No active window")
+
+        // 1. Find an editable field whose hint or contentDescription matches the label
+        val targetNode = findEditableByLabel(root, label)
+
+        if (targetNode != null) {
+            // Focus and type into the identified field
+            targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            Thread.sleep(150)
+            val result = service.inputText(targetNode, text)
+            return ActionOutcome(
+                result,
+                if (result) "Typed '$text' into field '$label'"
+                else "Failed to type into field '$label'"
+            )
+        }
+
+        // Fallback: click the nearest field to the label text, then type
+        val labelNode = findNodeByTextOrDesc(root, label, caseSensitive = false)
+        if (labelNode != null) {
+            service.clickNode(labelNode)
+            Thread.sleep(300)
+            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                ?.takeIf { it.isEditable }
+                ?: findEditableNode(root)
+            if (focused != null) {
+                val result = service.inputText(focused, text)
+                return ActionOutcome(
+                    result,
+                    if (result) "Typed '$text' after clicking label '$label'"
+                    else "Failed to type after clicking label"
+                )
+            }
+        }
+
+        // Last fallback: just use inputText (focused node)
+        android.util.Log.w("AccessibilityController", "inputTextIntoField: label '$label' not found, falling back")
+        return inputText(text)
+    }
+
+    /**
+     * Select an option from a dropdown/Spinner identified by its label.
+     * Steps:
+     *   1. Find the spinner element near the label text
+     *   2. Click to open the dropdown list
+     *   3. Wait for the popup to appear
+     *   4. Click the option text
+     */
+    fun selectDropdownOption(dropdownLabel: String, optionText: String): ActionOutcome {
+        val service = getService()
+            ?: return ActionOutcome(false, "AccessibilityService not running")
+        val root = service.rootInActiveWindow
+            ?: return ActionOutcome(false, "No active window")
+
+        // Strategy 1: Find a Spinner/dropdown near the label
+        val spinner = findSpinnerByLabel(root, dropdownLabel)
+        if (spinner != null) {
+            android.util.Log.d("AccessibilityController", "Found spinner for '$dropdownLabel', clicking to open")
+            val clicked = service.clickNode(spinner)
+            if (!clicked) return ActionOutcome(false, "Failed to open dropdown '$dropdownLabel'")
+        } else {
+            // Strategy 2: Find any element with text "Select an option" or the label itself
+            val fallback = findNodeByTextOrDesc(root, dropdownLabel, caseSensitive = false)
+                ?: findNodeByTextOrDesc(root, "Select an option", caseSensitive = false)
+            if (fallback != null) {
+                service.clickNode(fallback)
+                android.util.Log.d("AccessibilityController", "Opened dropdown via fallback text match")
+            } else {
+                return ActionOutcome(false, "Could not find dropdown for '$dropdownLabel'")
+            }
+        }
+
+        // Wait for the popup/dialog to open
+        Thread.sleep(800)
+
+        // Now find and click the desired option in the popup
+        val newRoot = service.rootInActiveWindow ?: return ActionOutcome(false, "No active window after dropdown open")
+        val option = findNodeByTextOrDesc(newRoot, optionText, caseSensitive = false)
+        if (option != null) {
+            val result = service.clickNode(option)
+            return ActionOutcome(
+                result,
+                if (result) "Selected '$optionText' in dropdown '$dropdownLabel'"
+                else "Failed to click option '$optionText'"
+            )
+        }
+
+        // Try scrolling in the popup and searching again
+        scrollDown()
+        Thread.sleep(300)
+        val newRoot2 = service.rootInActiveWindow ?: return ActionOutcome(false, "No window")
+        val option2 = findNodeByTextOrDesc(newRoot2, optionText, caseSensitive = false)
+        if (option2 != null) {
+            val result = service.clickNode(option2)
+            return ActionOutcome(result, if (result) "Selected '$optionText' after scroll" else "Click failed")
+        }
+
+        return ActionOutcome(false, "Option '$optionText' not found in dropdown '$dropdownLabel'")
+    }
+
+    /**
+     * Check or uncheck a checkbox identified by its label.
+     */
+    fun setCheckbox(label: String, shouldBeChecked: Boolean): ActionOutcome {
+        val service = getService()
+            ?: return ActionOutcome(false, "AccessibilityService not running")
+        val root = service.rootInActiveWindow
+            ?: return ActionOutcome(false, "No active window")
+
+        // Find a checkable node near the label
+        val checkNode = findCheckableByLabel(root, label)
+            ?: return ActionOutcome(false, "Checkbox '$label' not found")
+
+        val isAlreadyChecked = checkNode.isChecked
+        if (isAlreadyChecked == shouldBeChecked) {
+            return ActionOutcome(true, "Checkbox '$label' already ${if (shouldBeChecked) "checked" else "unchecked"}")
+        }
+
+        val result = service.clickNode(checkNode)
+        return ActionOutcome(
+            result,
+            if (result) "${if (shouldBeChecked) "Checked" else "Unchecked"} '$label'"
+            else "Failed to toggle checkbox '$label'"
+        )
+    }
+
+    // --- Form field helpers ---
+
+    private fun findEditableByLabel(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
+        // Collect all nodes in order
+        val allNodes = mutableListOf<Pair<AccessibilityNodeInfo, android.graphics.Rect>>()
+        collectAllNodes(root, allNodes)
+
+        // First: try to find an editable node whose hint text matches the label
+        for ((node, _) in allNodes) {
+            if (!node.isEditable) continue
+            val hint = node.hintText?.toString() ?: ""
+            val desc = node.contentDescription?.toString() ?: ""
+            if (hint.contains(label, ignoreCase = true) || label.contains(hint.take(20), ignoreCase = true) ||
+                desc.contains(label, ignoreCase = true)) {
+                return node
+            }
+        }
+
+        // Second: find the label node, then get the first editable after it in document order
+        for (i in allNodes.indices) {
+            val (node, _) = allNodes[i]
+            val nodeText = node.text?.toString() ?: ""
+            val nodeDesc = node.contentDescription?.toString() ?: ""
+            if (nodeText.contains(label, ignoreCase = true) || nodeDesc.contains(label, ignoreCase = true)) {
+                // Look for the first editable node after the label
+                for (j in i + 1 until minOf(i + 5, allNodes.size)) {
+                    val (next, _) = allNodes[j]
+                    if (next.isEditable) return next
+                }
+            }
+        }
+        return null
+    }
+
+    private fun findSpinnerByLabel(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
+        val allNodes = mutableListOf<Pair<AccessibilityNodeInfo, android.graphics.Rect>>()
+        collectAllNodes(root, allNodes)
+
+        // Find label node, then find the next clickable non-editable node (spinner)
+        for (i in allNodes.indices) {
+            val (node, _) = allNodes[i]
+            val nodeText = node.text?.toString() ?: ""
+            val nodeDesc = node.contentDescription?.toString() ?: ""
+            if (nodeText.contains(label, ignoreCase = true) || nodeDesc.contains(label, ignoreCase = true)) {
+                for (j in i + 1 until minOf(i + 6, allNodes.size)) {
+                    val (next, _) = allNodes[j]
+                    val nextText = next.text?.toString()?.lowercase() ?: ""
+                    val cls = next.className?.toString()?.substringAfterLast('.') ?: ""
+                    // It's a spinner if: class name is Spinner/AutoComplete OR it shows "Select an option"
+                    if (cls in listOf("Spinner", "AppCompatSpinner", "AutoCompleteTextView") ||
+                        (next.isClickable && !next.isEditable && nextText.contains("select"))) {
+                        return next
+                    }
+                }
+            }
+        }
+
+        // Fallback: look for any Spinner or "Select an option" node
+        for ((node, _) in allNodes) {
+            val cls = node.className?.toString()?.substringAfterLast('.') ?: ""
+            if (cls in listOf("Spinner", "AppCompatSpinner") && node.isClickable) return node
+        }
+        return null
+    }
+
+    private fun findCheckableByLabel(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
+        val allNodes = mutableListOf<Pair<AccessibilityNodeInfo, android.graphics.Rect>>()
+        collectAllNodes(root, allNodes)
+
+        for (i in allNodes.indices) {
+            val (node, _) = allNodes[i]
+            if (node.isCheckable) {
+                val nodeText = node.text?.toString() ?: ""
+                val nodeDesc = node.contentDescription?.toString() ?: ""
+                if (nodeText.contains(label, ignoreCase = true) || nodeDesc.contains(label, ignoreCase = true)) {
+                    return node
+                }
+            }
+            // Also check for a checkable just after the label text
+            val nodeText = node.text?.toString() ?: ""
+            if (nodeText.contains(label, ignoreCase = true)) {
+                for (j in i + 1 until minOf(i + 4, allNodes.size)) {
+                    val (next, _) = allNodes[j]
+                    if (next.isCheckable) return next
+                }
+            }
+        }
+        return null
+    }
+
+    private fun collectAllNodes(
+        node: AccessibilityNodeInfo,
+        result: MutableList<Pair<AccessibilityNodeInfo, android.graphics.Rect>>
+    ) {
+        val rect = android.graphics.Rect()
+        node.getBoundsInScreen(rect)
+        result.add(Pair(node, rect))
+        for (i in 0 until node.childCount) {
+            node.getChild(i)?.let { collectAllNodes(it, result) }
+        }
+    }
+
     fun pressEnter(): ActionOutcome {
         val service = getService()
             ?: return ActionOutcome(false, "AccessibilityService not running")

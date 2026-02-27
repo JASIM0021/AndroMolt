@@ -31,6 +31,13 @@
       "expo-dev-client",
       "expo-secure-store",
       [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow AndroMolt to access your microphone for voice input.",
+          "speechRecognitionPermission": "Allow AndroMolt to securely recognize your speech for hands-free commands."
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",

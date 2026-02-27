@@ -455,6 +455,43 @@ class AndroMoltCoreModule(reactContext: ReactApplicationContext) : ReactContextB
         }
     }
 
+    @ReactMethod
+    fun getInstalledAppsWithIcons(promise: Promise) {
+        try {
+            val pm = reactApplicationContext.packageManager
+            val intent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+                addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+            }
+            val result = Arguments.createArray()
+            pm.queryIntentActivities(intent, 0)
+                .sortedBy { it.loadLabel(pm).toString().lowercase() }
+                .forEach { info ->
+                    val map = Arguments.createMap()
+                    map.putString("name", info.loadLabel(pm).toString())
+                    map.putString("packageName", info.activityInfo.packageName)
+                    // Encode icon as Base64 PNG
+                    try {
+                        val drawable = info.loadIcon(pm)
+                        val size = 96 // 96x96 dp — plenty for a 48pt logical size
+                        val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+                        val canvas = android.graphics.Canvas(bitmap)
+                        drawable.setBounds(0, 0, size, size)
+                        drawable.draw(canvas)
+                        val stream = java.io.ByteArrayOutputStream()
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, stream)
+                        val b64 = android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
+                        map.putString("icon", "data:image/png;base64,$b64")
+                    } catch (_: Exception) {
+                        map.putString("icon", "")
+                    }
+                    result.pushMap(map)
+                }
+            promise.resolve(result)
+        } catch (e: Exception) {
+            promise.reject("ERR_INSTALLED_APPS_ICONS", e.message)
+        }
+    }
+
     // ==== Helper Methods ====
 
     private fun collectElements(node: AccessibilityNodeInfo, array: WritableArray) {
@@ -525,15 +562,17 @@ class AndroMoltCoreModule(reactContext: ReactApplicationContext) : ReactContextB
     private var currentAgentLoop: NativeAgentLoop? = null
 
     @ReactMethod
-    fun runNativeAgent(goal: String, openaiApiKey: String?, geminiApiKey: String?, promise: Promise) {
+    fun runNativeAgent(goal: String, openaiApiKey: String?, geminiApiKey: String?, openaiModel: String?, geminiModel: String?, promise: Promise) {
         try {
             // Cancel any existing agent loop
             currentAgentLoop?.cancel()
 
-            // Create LLM client with API keys
+            // Create LLM client with API keys and chosen models
             val llmClient = NativeLlmClient(reactApplicationContext)
             llmClient.openaiApiKey = openaiApiKey
             llmClient.geminiApiKey = geminiApiKey
+            if (!openaiModel.isNullOrBlank()) llmClient.openaiModel = openaiModel
+            if (!geminiModel.isNullOrBlank()) llmClient.geminiModel = geminiModel
 
             // Create and run agent loop
             val agentLoop = NativeAgentLoop(reactApplicationContext, llmClient)

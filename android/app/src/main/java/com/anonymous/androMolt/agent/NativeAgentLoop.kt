@@ -79,7 +79,7 @@ class NativeAgentLoop(
         val targetPackage = targetAppMatch?.groupValues?.get(1)
         val cleanGoal = goal.replace(targetAppMatch?.value ?: "", "").trim()
         val isQaMode = targetPackage != null ||
-            Regex("(?i)\\b(test|check|verify|qa|assert|validate)\\b").containsMatchIn(cleanGoal)
+            Regex("(?i)\\b(qa\\s*test|run\\s*test|test\\s*case)\\b").containsMatchIn(cleanGoal)
         val testSteps = mutableListOf<TestStep>()
 
         // Dynamic step budget
@@ -330,6 +330,21 @@ class NativeAgentLoop(
                 val text = action.params["text"] as? String ?: ""
                 AccessibilityController.inputText(text)
             }
+            "input_text_into_field" -> {
+                val label = action.params["label"] as? String ?: ""
+                val text = action.params["text"] as? String ?: ""
+                AccessibilityController.inputTextIntoField(label, text)
+            }
+            "select_dropdown_option" -> {
+                val label = action.params["label"] as? String ?: ""
+                val option = action.params["option"] as? String ?: ""
+                AccessibilityController.selectDropdownOption(label, option)
+            }
+            "set_checkbox" -> {
+                val label = action.params["label"] as? String ?: ""
+                val checked = action.params["checked"] as? Boolean ?: true
+                AccessibilityController.setCheckbox(label, checked)
+            }
             "press_enter" -> {
                 AccessibilityController.pressEnter()
             }
@@ -435,7 +450,9 @@ class NativeAgentLoop(
         if (!isQaMode) return
         try {
             val passedCount = testSteps.count { it.passed }
-            val overallPassed = result.success && passedCount > testSteps.size / 2
+            val overallPassThreshold = 0.9
+            val overallPassed = result.success &&
+                (testSteps.isNotEmpty() && (passedCount.toDouble() / testSteps.size) >= overallPassThreshold)
             val testRun = TestRun(
                 goal = cleanGoal,
                 targetApp = targetPackage,

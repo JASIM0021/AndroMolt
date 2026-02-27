@@ -23,7 +23,7 @@ class NativeLlmClient(private val context: Context) {
         private const val TAG = "NativeLlmClient"
         private const val TIMEOUT_SECONDS = 30L
         private const val OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-        private const val GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
+        private const val GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
     }
 
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
@@ -37,6 +37,9 @@ class NativeLlmClient(private val context: Context) {
     // API keys - will be set from React Native or config
     var openaiApiKey: String? = null
     var geminiApiKey: String? = null
+    // Model names - configurable from React Native settings
+    var openaiModel: String = "gpt-4o-mini"
+    var geminiModel: String = "gemini-2.0-flash-exp"
 
     fun getNextAction(
         goal: String,
@@ -124,7 +127,10 @@ Available actions:
 - click_by_text: Click element by visible text (e.g., {"text": "Search"})
 - click_by_content_desc: Click element by accessibility description (e.g., {"desc": "Play"})
 - click_by_index: Click element by index [0-149] (e.g., {"index": 5})
-- input_text: Type text into focused field (e.g., {"text": "hello world"})
+- input_text: Type text into the currently focused field (e.g., {"text": "hello world"})
+- input_text_into_field: Type into a SPECIFIC form field by label/hint (e.g., {"label": "Expected CTC", "text": "10.5"})
+- select_dropdown_option: Open a Spinner/dropdown by label and select an option (e.g., {"label": "iOS and Android testing", "option": "Yes"})
+- set_checkbox: Check or uncheck a checkbox by label (e.g., {"label": "I agree", "checked": true})
 - press_enter: Press enter/submit (will try keyboard search button first)
 - scroll: Scroll down
 - back: Press back button (USE SPARINGLY - only when truly stuck)
@@ -141,7 +147,20 @@ CRITICAL RULES:
 
 2. If step 1-2 and goal mentions an app (YouTube, WhatsApp, etc.), use "open_app" with package name
 
-3. **IMPORTANT: For video/content results (YouTube videos, songs, posts, articles):**
+3. **FORM-FILLING RULES (VERY IMPORTANT):**
+   - When you see a form (any screen with EditText/Spinner fields and labels/questions), fill it systematically:
+   - For text fields (EditText editable): use `input_text_into_field` with the field question as `label`
+     - Example: field labeled "Expected CTC" → {"action":"input_text_into_field","params":{"label":"Expected CTC","text":"10"}}
+   - For numeric fields (inputType=number): ALWAYS provide a numeric string like "10" or "5.5"; NEVER leave blank
+   - For dropdowns (Spinner selectable, or text="Select an option"): use `select_dropdown_option`
+     - Example: {"action":"select_dropdown_option","params":{"label":"iOS and Android testing","option":"Yes"}}
+   - For checkboxes (checkable): use `set_checkbox`
+   - DO NOT use `click_by_text` to click "Select an option" — use `select_dropdown_option` instead
+   - Fill fields TOP TO BOTTOM on the screen; scroll to reveal more fields
+   - If validation errors appear (red text, "Please enter a valid answer"), re-fill those fields
+   - After all fields are filled, click the Submit/Next/Review button to proceed
+
+4. **IMPORTANT: For video/content results (YouTube videos, songs, posts, articles):**
    - ALWAYS prefer "click_by_text" with the title/name
    - Extract the video title from the screen (look for quoted text)
    - Example: {"action": "click_by_text", "params": {"text": "Main Yahaan Hoon"}, "reasoning": "..."}
@@ -254,12 +273,12 @@ QA TESTER MODE — You are acting as an Android QA engineer:
 
     private fun callOpenAI(prompt: String): String {
         val requestBody = JsonObject().apply {
-            addProperty("model", "gpt-4o-mini")
+            addProperty("model", openaiModel)
             add("messages", gson.toJsonTree(listOf(
                 mapOf("role" to "user", "content" to prompt)
             )))
             addProperty("temperature", 0.3)
-            addProperty("max_tokens", 200)
+            addProperty("max_tokens", 400)
         }
 
         val request = Request.Builder()
@@ -290,12 +309,12 @@ QA TESTER MODE — You are acting as an Android QA engineer:
             )))
             add("generationConfig", gson.toJsonTree(mapOf(
                 "temperature" to 0.3,
-                "maxOutputTokens" to 200
+                "maxOutputTokens" to 400
             )))
         }
 
         val request = Request.Builder()
-            .url("$GEMINI_API_URL?key=$geminiApiKey")
+            .url("$GEMINI_BASE_URL/$geminiModel:generateContent?key=$geminiApiKey")
             .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
             .addHeader("Content-Type", "application/json")
             .build()
@@ -333,12 +352,12 @@ QA TESTER MODE — You are acting as an Android QA engineer:
                 mapOf("text" to prompt)
             )))))
             add("generationConfig", gson.toJsonTree(mapOf(
-                "temperature" to 0.3, "maxOutputTokens" to 200
+                "temperature" to 0.3, "maxOutputTokens" to 400
             )))
         }
 
         val request = Request.Builder()
-            .url("$GEMINI_API_URL?key=$geminiApiKey")
+            .url("$GEMINI_BASE_URL/$geminiModel:generateContent?key=$geminiApiKey")
             .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
             .addHeader("Content-Type", "application/json")
             .build()

@@ -48,15 +48,26 @@ object QaReportWriter {
             val uri = context.contentResolver.insert(
                 MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
             ) ?: return "error:insert_failed"
-            context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
+            
+            val stream = context.contentResolver.openOutputStream(uri)
+            if (stream == null) {
+                context.contentResolver.delete(uri, null, null)
+                return "error:open_stream_failed"
+            }
+            stream.use { it.write(json.toByteArray()) }
             "Download/AndroMolt/$filename"
         } else {
-            val dir = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                "AndroMolt"
-            ).also { it.mkdirs() }
-            File(dir, filename).writeText(json)
-            "Download/AndroMolt/$filename"
+            try {
+                val dir = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    "AndroMolt"
+                ).also { it.mkdirs() }
+                
+                File(dir, filename).writeText(json)
+                "Download/AndroMolt/$filename"
+            } catch (e: Exception) {
+                "error:write_failed"
+            }
         }
     }
 }
